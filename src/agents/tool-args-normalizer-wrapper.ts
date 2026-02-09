@@ -146,9 +146,14 @@ function normalizeToolCallArgs(
     if ("id" in normalized && !("action" in normalized)) {
       const idValue = normalized.id;
       if (typeof idValue === "string") {
+        // Actions that require jobId: update, remove, run, runs
+        const actionsRequiringJobId = ["update", "remove", "run", "runs"];
+
         // If id is exactly a valid action, use it
         if (validActions.includes(idValue)) {
           normalized.action = idValue;
+          // If this action requires jobId, we can't use id as jobId since it's the action name
+          // Remove id - the error will be thrown later when jobId is missing (which is correct)
           delete normalized.id;
           changed = true;
           logDebug(
@@ -159,8 +164,8 @@ function normalizeToolCallArgs(
           const extracted = extractAction(idValue);
           if (extracted) {
             normalized.action = extracted;
-            // Always remove id when extracting action, as id is not used for "add" action
-            // For other actions like "update", jobId should be passed separately
+            // If extracted action requires jobId, we remove id since it can't be used as jobId
+            // The error will be thrown later when jobId is missing (which is correct)
             delete normalized.id;
             changed = true;
             logDebug(

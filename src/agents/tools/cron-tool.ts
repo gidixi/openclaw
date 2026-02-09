@@ -339,17 +339,59 @@ Use jobId as the canonical identifier; id is accepted for compatibility. Use con
         // Priority 2: Check id if action still not set
         if (!params.action && typeof params.id === "string") {
           const idValue = params.id;
+          // Actions that require jobId: update, remove, run, runs
+          const actionsRequiringJobId = new Set(["update", "remove", "run", "runs"]);
+
           // If id is exactly a valid action, use it
           if (validActions.has(idValue)) {
             params.action = idValue as (typeof CRON_ACTIONS)[number];
+            // If this action requires jobId, we can't use id as jobId since it's the action name
+            // Remove id - the error will be thrown later when jobId is missing (which is correct)
             delete params.id;
           } else {
             // Try to extract action from id value (e.g., "add-job" → "add")
             const extracted = extractAction(idValue);
             if (extracted) {
               params.action = extracted as (typeof CRON_ACTIONS)[number];
-              // Remove id when extracting action, as id is not used for "add" action
-              delete params.id;
+
+              // If extracted action requires jobId, try to extract jobId from the remaining part
+              if (actionsRequiringJobId.has(extracted)) {
+                // Try to extract jobId from id (e.g., "update-job-123" → action: "update", jobId: "job-123")
+                // Pattern: action-separator-jobId (e.g., "update-job-123", "update_job-123")
+                let jobId: string | undefined;
+
+                // Check if id starts with action followed by separator
+                if (idValue.startsWith(extracted + "-") || idValue.startsWith(extracted + "_")) {
+                  // Extract everything after "action-separator"
+                  jobId = idValue.slice(extracted.length + 1).trim();
+                } else {
+                  // Check if action is in the middle (e.g., "test-update-job-123")
+                  const actionIndex = idValue.indexOf(extracted);
+                  if (actionIndex >= 0) {
+                    // Find the separator after the action
+                    const afterActionIndex = actionIndex + extracted.length;
+                    if (afterActionIndex < idValue.length) {
+                      const charAfter = idValue[afterActionIndex];
+                      if (charAfter === "-" || charAfter === "_") {
+                        // Extract everything after "action-separator"
+                        jobId = idValue.slice(afterActionIndex + 1).trim();
+                      }
+                    }
+                  }
+                }
+
+                if (jobId && jobId.length > 0) {
+                  // Use the extracted jobId
+                  params.jobId = jobId;
+                  delete params.id;
+                } else {
+                  // No jobId found, remove id and let error handler catch it
+                  delete params.id;
+                }
+              } else {
+                // Action doesn't require jobId, safe to remove id
+                delete params.id;
+              }
             }
           }
         }
@@ -427,6 +469,39 @@ Use jobId as the canonical identifier; id is accepted for compatibility. Use con
             throw new Error("job required");
           }
           const job = normalizeCronJobCreate(params.job) ?? params.job;
+
+          // Auto-fix: Correct sessionTarget/payload.kind mismatch (gpt-oss compatibility)
+          // If sessionTarget="main" but payload.kind="agentTurn", change sessionTarget to "isolated"
+          // If sessionTarget="isolated" but payload.kind="systemEvent", change sessionTarget to "main"
+          if (job && typeof job === "object" && "payload" in job && "sessionTarget" in job) {
+            const payload = job.payload as { kind?: string } | undefined;
+            const payloadKind = payload?.kind;
+            const sessionTarget = job.sessionTarget as string | undefined;
+
+            if (sessionTarget === "main" && payloadKind === "agentTurn") {
+              (job as { sessionTarget: string }).sessionTarget = "isolated";
+              logWarn(
+                `[cron-tool] Auto-corrected sessionTarget: "main" → "isolated" (payload.kind="agentTurn" requires isolated)`,
+              );
+            } else if (sessionTarget === "isolated" && payloadKind === "systemEvent") {
+              (job as { sessionTarget: string }).sessionTarget = "main";
+              logWarn(
+                `[cron-tool] Auto-corrected sessionTarget: "isolated" → "main" (payload.kind="systemEvent" requires main)`,
+              );
+            }
+          }
+
+          // Auto-fix: Remove delivery if sessionTarget="main" (delivery is only supported for isolated)
+          // gpt-oss sometimes passes delivery with sessionTarget="main", which is invalid
+          if (job && typeof job === "object" && "delivery" in job && "sessionTarget" in job) {
+            const sessionTarget = job.sessionTarget as string | undefined;
+            if (sessionTarget === "main" && job.delivery) {
+              delete (job as { delivery?: unknown }).delivery;
+              logWarn(
+                `[cron-tool] Auto-removed delivery config (delivery is only supported for sessionTarget="isolated", but sessionTarget="main")`,
+              );
+            }
+          }
           if (job && typeof job === "object" && !("agentId" in job)) {
             const cfg = loadConfig();
             const agentId = opts?.agentSessionKey
