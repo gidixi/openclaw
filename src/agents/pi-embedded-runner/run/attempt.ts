@@ -29,6 +29,7 @@ import {
 } from "../../channel-tools.js";
 import { resolveOpenClawDocsPath } from "../../docs-path.js";
 import { isTimeoutError } from "../../failover-error.js";
+import { createGptOssHarmonyWrapper } from "../../harmony-stream-wrapper.js";
 import { resolveModelAuthMode } from "../../model-auth.js";
 import { resolveDefaultModelForAgent } from "../../model-selection.js";
 import {
@@ -58,6 +59,7 @@ import {
 } from "../../skills.js";
 import { buildSystemPromptParams } from "../../system-prompt-params.js";
 import { buildSystemPromptReport } from "../../system-prompt-report.js";
+import { createToolArgsNormalizerWrapper } from "../../tool-args-normalizer-wrapper.js";
 import { resolveTranscriptPolicy } from "../../transcript-policy.js";
 import { DEFAULT_BOOTSTRAP_FILENAME } from "../../workspace.js";
 import { isAbortError } from "../abort.js";
@@ -456,6 +458,8 @@ export async function runEmbeddedAttempt(
       const { builtInTools, customTools } = splitSdkTools({
         tools,
         sandboxEnabled: !!sandbox?.enabled,
+        modelProvider: params.provider,
+        modelId: params.modelId,
       });
 
       // Add client tools (OpenResponses hosted tools) to customTools
@@ -538,6 +542,23 @@ export async function runEmbeddedAttempt(
           activeSession.agent.streamFn,
         );
       }
+
+      // gpt-oss on Ollama: bypass Ollama's broken Harmony parser by
+      // moving tools from the API request into the system prompt and
+      // parsing tool calls from text output.
+      const harmonyWrapper = createGptOssHarmonyWrapper({
+        modelProvider: params.provider,
+        modelId: params.modelId,
+      });
+      if (harmonyWrapper) {
+        activeSession.agent.streamFn = harmonyWrapper(activeSession.agent.streamFn);
+      }
+
+      // Tool argument normalizer: intercept stream events and normalize tool
+      // call arguments (unwrap double-wrapping, cmd→command, etc.) BEFORE they
+      // reach the agent loop's validation.  This prevents validation errors for
+      // common model mistakes without any retry/loop risk.
+      activeSession.agent.streamFn = createToolArgsNormalizerWrapper(activeSession.agent.streamFn);
 
       try {
         const prior = await sanitizeSessionHistory({
