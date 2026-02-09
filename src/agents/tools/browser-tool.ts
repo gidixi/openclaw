@@ -24,6 +24,7 @@ import { DEFAULT_AI_SNAPSHOT_MAX_CHARS } from "../../browser/constants.js";
 import { loadConfig } from "../../config/config.js";
 import { saveMediaBuffer } from "../../media/store.js";
 import { BrowserToolSchema } from "./browser-tool.schema.js";
+import { BROWSER_TOOL_ACTIONS } from "./browser-tool.schema.js";
 import { type AnyAgentTool, imageResultFromFile, jsonResult, readStringParam } from "./common.js";
 import { callGatewayTool } from "./gateway.js";
 import { listNodes, resolveNodeIdFromList, type NodeListNode } from "./nodes-utils.js";
@@ -242,6 +243,59 @@ export function createBrowserTool(opts?: {
     parameters: BrowserToolSchema,
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
+
+      // --- Recovery: infer action from ref/type/request.kind when missing (gpt-oss compatibility) ---
+      // This handles cases where gpt-oss passes ref: "open", type: "open", or request: { kind: "open" } instead of action: "open"
+      if (!params.action || typeof params.action !== "string") {
+        const validActions = new Set<string>(BROWSER_TOOL_ACTIONS);
+        const validImageTypes = new Set(["png", "jpeg"]);
+
+        // Priority 1: Check ref
+        if (typeof params.ref === "string" && validActions.has(params.ref)) {
+          params.action = params.ref;
+        }
+        // Priority 2: Check request.kind
+        else if (params.request && typeof params.request === "object" && params.request !== null) {
+          const request = params.request as { kind?: unknown };
+          if (typeof request.kind === "string" && validActions.has(request.kind)) {
+            params.action = request.kind;
+            // Remove kind from request if it was the only field
+            const requestKeys = Object.keys(request);
+            if (requestKeys.length === 1 && "kind" in request) {
+              delete params.request;
+            } else {
+              delete request.kind;
+            }
+          }
+        }
+        // Priority 3: Check type (but not if it's a valid image type)
+        else if (
+          typeof params.type === "string" &&
+          validActions.has(params.type) &&
+          !validImageTypes.has(params.type)
+        ) {
+          params.action = params.type;
+          delete params.type;
+        }
+        // Priority 4: Check mode
+        else if (
+          typeof params.mode === "string" &&
+          validActions.has(params.mode) &&
+          params.mode !== "efficient"
+        ) {
+          params.action = params.mode;
+          delete params.mode;
+        }
+      }
+
+      // Also normalize inputRef → targetUrl for open action
+      if (params.action === "open" && "inputRef" in params && !("targetUrl" in params)) {
+        const inputRefValue = params.inputRef;
+        if (typeof inputRefValue === "string" && inputRefValue.trim()) {
+          params.targetUrl = inputRefValue.trim();
+        }
+      }
+
       const action = readStringParam(params, "action", { required: true });
       const profile = readStringParam(params, "profile");
       const requestedNode = readStringParam(params, "node");

@@ -181,10 +181,10 @@ function normalizeToolCallArgs(
     }
   }
 
-  // 2.6. Special handling for browser tool: mode → action (when invalid)
-  // gpt-oss sometimes passes mode: "status" instead of action: "status"
+  // 2.6. Special handling for browser tool: mode/ref/type → action (when invalid)
+  // gpt-oss sometimes passes mode: "status", ref: "open", or type: "open" instead of action: "open"
   if (toolName === "browser" && !("action" in record)) {
-    const validActions = [
+    const validActions = new Set([
       "status",
       "start",
       "stop",
@@ -201,17 +201,75 @@ function normalizeToolCallArgs(
       "upload",
       "dialog",
       "act",
-    ];
+    ]);
     const validSnapshotModes = ["efficient"];
     const normalized = { ...record };
     let changed = false;
 
-    // Check mode if action is missing
-    if ("mode" in normalized) {
+    // Helper: check if a value is a valid action
+    const isValidAction = (value: string): boolean => {
+      return validActions.has(value);
+    };
+
+    // Priority 1: Check ref (gpt-oss often uses ref: "open" instead of action: "open")
+    if ("ref" in normalized && !("action" in normalized)) {
+      const refValue = normalized.ref;
+      if (typeof refValue === "string" && isValidAction(refValue)) {
+        normalized.action = refValue;
+        // Don't delete ref - it might be used for other purposes (element reference)
+        // But if ref is the action, we should preserve it as action
+        changed = true;
+        logDebug(
+          `[tool-normalizer] Normalized browser tool: ref: "${refValue}" → action: "${refValue}"`,
+        );
+      }
+    }
+
+    // Priority 2: Check request.kind (gpt-oss sometimes uses request: { kind: "open" } instead of action: "open")
+    // Note: request.kind is for browser actions (click, type, etc.), but gpt-oss confuses it with tool action
+    if (!("action" in normalized) && "request" in normalized) {
+      const requestValue = normalized.request;
+      if (requestValue && typeof requestValue === "object" && "kind" in requestValue) {
+        const requestKind = requestValue.kind;
+        if (typeof requestKind === "string" && isValidAction(requestKind)) {
+          normalized.action = requestKind;
+          // Don't delete request - it might contain other valid fields
+          // But remove kind from request since it's now the action
+          const request = requestValue as Record<string, unknown>;
+          if (Object.keys(request).length === 1 && "kind" in request) {
+            // If request only has kind, we can delete the whole request object
+            delete normalized.request;
+          } else {
+            // Otherwise, just remove kind from request
+            delete request.kind;
+          }
+          changed = true;
+          logDebug(
+            `[tool-normalizer] Normalized browser tool: request.kind: "${requestKind}" → action: "${requestKind}"`,
+          );
+        }
+      }
+    }
+
+    // Priority 3: Check type (gpt-oss sometimes uses type: "open" instead of action: "open")
+    if (!("action" in normalized) && "type" in normalized) {
+      const typeValue = normalized.type;
+      if (typeof typeValue === "string" && isValidAction(typeValue)) {
+        normalized.action = typeValue;
+        delete normalized.type;
+        changed = true;
+        logDebug(
+          `[tool-normalizer] Normalized browser tool: type: "${typeValue}" → action: "${typeValue}"`,
+        );
+      }
+    }
+
+    // Priority 4: Check mode if action is missing
+    if (!("action" in normalized) && "mode" in normalized) {
       const modeValue = normalized.mode;
       if (typeof modeValue === "string") {
         // If mode is a valid action but not a valid snapshot mode, it's likely meant to be action
-        if (validActions.includes(modeValue) && !validSnapshotModes.includes(modeValue)) {
+        if (validActions.has(modeValue) && !validSnapshotModes.includes(modeValue)) {
           normalized.action = modeValue;
           delete normalized.mode;
           changed = true;
@@ -219,6 +277,20 @@ function normalizeToolCallArgs(
             `[tool-normalizer] Normalized browser tool: mode: "${modeValue}" → action: "${modeValue}"`,
           );
         }
+      }
+    }
+
+    // Also normalize inputRef → targetUrl for browser tool (gpt-oss compatibility)
+    if ("inputRef" in normalized && !("targetUrl" in normalized)) {
+      const inputRefValue = normalized.inputRef;
+      if (typeof inputRefValue === "string" && inputRefValue.trim()) {
+        normalized.targetUrl = inputRefValue.trim();
+        // Don't delete inputRef immediately - it might be used elsewhere
+        // But we've added targetUrl which is the correct parameter
+        changed = true;
+        logDebug(
+          `[tool-normalizer] Normalized browser tool: inputRef: "${inputRefValue}" → targetUrl: "${inputRefValue}"`,
+        );
       }
     }
 

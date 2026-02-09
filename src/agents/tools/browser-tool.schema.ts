@@ -15,7 +15,7 @@ const BROWSER_ACT_KINDS = [
   "close",
 ] as const;
 
-const BROWSER_TOOL_ACTIONS = [
+export const BROWSER_TOOL_ACTIONS = [
   "status",
   "start",
   "stop",
@@ -80,8 +80,10 @@ const BrowserActSchema = Type.Object({
 // IMPORTANT: OpenAI function tool schemas must have a top-level `type: "object"`.
 // A root-level `Type.Union([...])` compiles to `{ anyOf: [...] }` (no `type`),
 // which OpenAI rejects ("Invalid schema ... type: None"). Keep this schema an object.
+// Schema is permissive to allow gpt-oss malformed inputs (ref/type/request.kind instead of action).
+// Recovery logic in tool-args-normalizer-wrapper normalizes these cases.
 export const BrowserToolSchema = Type.Object({
-  action: stringEnum(BROWSER_TOOL_ACTIONS),
+  action: Type.Optional(stringEnum(BROWSER_TOOL_ACTIONS)), // Optional to allow recovery from ref/type/request.kind
   target: optionalStringEnum(BROWSER_TARGETS),
   node: Type.Optional(Type.String()),
   profile: Type.Optional(Type.String()),
