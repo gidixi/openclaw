@@ -37,6 +37,34 @@ New install? Start here: [Getting started](https://docs.openclaw.ai/start/gettin
 
 Model note: while any model is supported, I strongly recommend **Anthropic Pro/Max (100/200) + Opus 4.6** for long‑context strength and better prompt‑injection resistance. See [Onboarding](https://docs.openclaw.ai/start/onboarding).
 
+## 🚀 Fork Modifications
+
+This fork includes several enhancements and custom extensions:
+
+### Extensions
+
+- **auto-memory**: Automatic memory management extension that analyzes messages and automatically creates, updates, and manages memory entries. Provides intelligent memory writing and notification capabilities.
+
+- **fcm-gateway**: Firebase Cloud Messaging (FCM) gateway extension for push notifications and mobile device integration.
+
+### Core Improvements
+
+- **Enhanced Harmony Format Support**: Improved support for Harmony format with native TypeScript-like syntax. Includes:
+  - Native Harmony tool definitions using TypeScript-like syntax
+  - Enhanced parsing of Harmony format blocks
+  - Better tool call extraction from Harmony format
+  - Support for namespace extraction (`functions.tool_name`, `namespace::tool_name`)
+
+- **Tool Parameter Normalization**: Enhanced tool argument normalization with:
+  - Improved schema validation with stricter `additionalProperties` handling
+  - Better handling of common model mistakes in tool parameters
+  - Enhanced logging for debugging tool execution
+  - Support for alias extraction for better compatibility
+
+### Technical Details
+
+All modifications are maintained in sync with the upstream repository while preserving these custom enhancements. The fork is regularly synchronized with `openclaw/openclaw` main branch.
+
 ## Models (selection + auth)
 
 - Models config + CLI: [Models](https://docs.openclaw.ai/concepts/models)
