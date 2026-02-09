@@ -777,6 +777,10 @@
     {
       "source": "/platforms/northflank",
       "destination": "/install/northflank"
+    },
+    {
+      "source": "/blog/gpt-oss-20b-rtx4090",
+      "destination": "/blog/gpt-oss-20b-rtx4090"
     }
   ],
   "navigation": {
@@ -1244,6 +1248,10 @@
               {
                 "group": "Community",
                 "pages": ["start/lore"]
+              },
+              {
+                "group": "Blog",
+                "pages": ["blog/gpt-oss-20b-rtx4090"]
               },
               {
                 "group": "Environment and debugging",
