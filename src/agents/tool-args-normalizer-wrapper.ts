@@ -78,6 +78,150 @@ function normalizeToolCallArgs(
     }
   }
 
+  // 2.5. Special handling for cron tool: id → action, mode → action (when invalid)
+  // gpt-oss sometimes passes id: "add" or mode: "add" instead of action: "add"
+  // Also handles cases where id/mode contain an action (e.g., "add-job" contains "add")
+  if (toolName === "cron" && !("action" in record)) {
+    const validActions = ["status", "list", "add", "update", "remove", "run", "runs", "wake"];
+    const validWakeModes = ["now", "next-heartbeat"];
+    const validRunModes = ["due", "force"];
+    const normalized = { ...record };
+    let changed = false;
+
+    // Helper: extract action from a string if it contains a valid action
+    const extractAction = (value: string): string | null => {
+      // First check exact match
+      if (validActions.includes(value)) {
+        return value;
+      }
+      // Then check if it starts with a valid action (e.g., "add-job" → "add")
+      for (const action of validActions) {
+        if (value.startsWith(action + "-") || value.startsWith(action + "_")) {
+          return action;
+        }
+      }
+      // Also check if it contains a valid action as a word boundary (e.g., "test-add-job" → "add")
+      // This is less common but can happen with gpt-oss
+      for (const action of validActions) {
+        const pattern = new RegExp(`(^|[_-])${action}([_-]|$)`);
+        if (pattern.test(value)) {
+          return action;
+        }
+      }
+      return null;
+    };
+
+    // Priority 1: Check mode first (mode: "add" is more likely to be action than id: "add-job")
+    if ("mode" in normalized && !("action" in normalized)) {
+      const modeValue = normalized.mode;
+      if (typeof modeValue === "string") {
+        // If mode is a valid action but not a valid mode value, it's likely meant to be action
+        if (
+          validActions.includes(modeValue) &&
+          !validWakeModes.includes(modeValue) &&
+          !validRunModes.includes(modeValue)
+        ) {
+          normalized.action = modeValue;
+          delete normalized.mode;
+          changed = true;
+          logDebug(
+            `[tool-normalizer] Normalized cron tool: mode: "${modeValue}" → action: "${modeValue}"`,
+          );
+        } else {
+          // Try to extract action from mode value (e.g., "add-job" → "add")
+          const extracted = extractAction(modeValue);
+          if (extracted) {
+            normalized.action = extracted;
+            delete normalized.mode;
+            changed = true;
+            logDebug(
+              `[tool-normalizer] Normalized cron tool: mode: "${modeValue}" → action: "${extracted}"`,
+            );
+          }
+        }
+      }
+    }
+
+    // Priority 2: Check id if action still not set
+    if ("id" in normalized && !("action" in normalized)) {
+      const idValue = normalized.id;
+      if (typeof idValue === "string") {
+        // If id is exactly a valid action, use it
+        if (validActions.includes(idValue)) {
+          normalized.action = idValue;
+          delete normalized.id;
+          changed = true;
+          logDebug(
+            `[tool-normalizer] Normalized cron tool: id: "${idValue}" → action: "${idValue}"`,
+          );
+        } else {
+          // Try to extract action from id value (e.g., "add-job" → "add")
+          const extracted = extractAction(idValue);
+          if (extracted) {
+            normalized.action = extracted;
+            // Always remove id when extracting action, as id is not used for "add" action
+            // For other actions like "update", jobId should be passed separately
+            delete normalized.id;
+            changed = true;
+            logDebug(
+              `[tool-normalizer] Normalized cron tool: id: "${idValue}" → action: "${extracted}"`,
+            );
+          }
+        }
+      }
+    }
+
+    if (changed) {
+      return normalized;
+    }
+  }
+
+  // 2.6. Special handling for browser tool: mode → action (when invalid)
+  // gpt-oss sometimes passes mode: "status" instead of action: "status"
+  if (toolName === "browser" && !("action" in record)) {
+    const validActions = [
+      "status",
+      "start",
+      "stop",
+      "profiles",
+      "tabs",
+      "open",
+      "focus",
+      "close",
+      "snapshot",
+      "screenshot",
+      "navigate",
+      "console",
+      "pdf",
+      "upload",
+      "dialog",
+      "act",
+    ];
+    const validSnapshotModes = ["efficient"];
+    const normalized = { ...record };
+    let changed = false;
+
+    // Check mode if action is missing
+    if ("mode" in normalized) {
+      const modeValue = normalized.mode;
+      if (typeof modeValue === "string") {
+        // If mode is a valid action but not a valid snapshot mode, it's likely meant to be action
+        if (validActions.includes(modeValue) && !validSnapshotModes.includes(modeValue)) {
+          normalized.action = modeValue;
+          delete normalized.mode;
+          changed = true;
+          logDebug(
+            `[tool-normalizer] Normalized browser tool: mode: "${modeValue}" → action: "${modeValue}"`,
+          );
+        }
+      }
+    }
+
+    if (changed) {
+      return normalized;
+    }
+  }
+
   // 3. Fallback to hardcoded normalizations (cmd→command, file_path→path, etc.)
   return normalizeToolParams(record) ?? undefined;
 }

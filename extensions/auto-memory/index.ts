@@ -18,20 +18,24 @@ export default function register(api: OpenClawPluginApi) {
   const messageThreshold = cfg.messageThreshold ?? 5;
   const minImportance = cfg.minImportance ?? 0.7;
   const notificationEnabled = cfg.notificationEnabled !== false;
-  const notificationMessage = cfg.notificationMessage ?? "💾 Memoria aggiornata";
+  const notificationMessage = cfg.notificationMessage ?? "💾 Memory updated";
 
-  // Contatore per sessione
+  // Per-session message counter
   const messageCounts = new Map<string, number>();
 
   api.on("agent_end", async (event, ctx) => {
     try {
       // Skip if not successful or no messages
       if (!event.success || !event.messages || event.messages.length === 0) {
+        api.logger.info(
+          `auto-memory: skipping (success=${event.success}, messages=${event.messages?.length ?? 0})`,
+        );
         return;
       }
 
       const sessionKey = ctx.sessionKey;
       if (!sessionKey) {
+        api.logger.warn("auto-memory: no sessionKey in context");
         return;
       }
 
@@ -41,6 +45,9 @@ export default function register(api: OpenClawPluginApi) {
 
       // Check if we've reached the threshold
       if (currentCount < messageThreshold) {
+        api.logger.info(
+          `auto-memory: message ${currentCount}/${messageThreshold} for session (waiting for threshold)`,
+        );
         return;
       }
 
@@ -49,7 +56,7 @@ export default function register(api: OpenClawPluginApi) {
 
       api.logger.info(`auto-memory: analyzing conversation (session: ${sessionKey})`);
 
-      // Analyze messages
+      // Resolve workspace
       const agentId = ctx.agentId ?? resolveAgentIdFromSessionKey(sessionKey);
       const workspaceDir = ctx.workspaceDir ?? resolveAgentWorkspaceDir(api.config, agentId);
       if (!workspaceDir) {
@@ -57,11 +64,15 @@ export default function register(api: OpenClawPluginApi) {
         return;
       }
 
+      api.logger.info(`auto-memory: workspaceDir=${workspaceDir}, agentId=${agentId}`);
+
+      // Analyze messages (pass logger for debug visibility)
       const analysis = await analyzeMessages(
         event.messages,
         api.config,
         workspaceDir,
         minImportance,
+        api.logger,
       );
 
       if (analysis.facts.length === 0) {
@@ -91,11 +102,14 @@ export default function register(api: OpenClawPluginApi) {
         );
 
         if (!notifyResult.success) {
-          api.logger.warn(`auto-memory: failed to send notification: ${notifyResult.error}`);
+          api.logger.warn(`auto-memory: notification failed: ${notifyResult.error}`);
         }
       }
     } catch (err) {
       api.logger.error(`auto-memory: error: ${err instanceof Error ? err.message : String(err)}`);
+      if (err instanceof Error && err.stack) {
+        api.logger.warn(`auto-memory: stack: ${err.stack.split("\n").slice(0, 5).join(" | ")}`);
+      }
     }
   });
 }

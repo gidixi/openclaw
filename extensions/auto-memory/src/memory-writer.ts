@@ -35,7 +35,7 @@ export async function writeToMemory(
     }
 
     // Format new entry
-    const timeStr = now.toLocaleTimeString("it-IT", {
+    const timeStr = now.toLocaleTimeString("en-US", {
       hour: "2-digit",
       minute: "2-digit",
     });
@@ -55,12 +55,12 @@ export async function writeToMemory(
     for (const [category, categoryFacts] of byCategory.entries()) {
       const categoryLabel =
         category === "decision"
-          ? "Decisioni"
+          ? "Decisions"
           : category === "preference"
-            ? "Preferenze"
+            ? "Preferences"
             : category === "personal_info"
-              ? "Informazioni personali"
-              : "Fatti";
+              ? "Personal Information"
+              : "Facts";
       entryLines.push(`\n### ${categoryLabel}`);
       for (const fact of categoryFacts) {
         entryLines.push(`- ${fact.fact}`);

@@ -2,6 +2,7 @@ import { Type } from "@sinclair/typebox";
 import type { CronDelivery, CronMessageChannel } from "../../cron/types.js";
 import { loadConfig } from "../../config/config.js";
 import { normalizeCronJobCreate, normalizeCronJobPatch } from "../../cron/normalize.js";
+import { logWarn } from "../../logger.js";
 import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
 import { truncateUtf16Safe } from "../../utils.js";
 import { resolveSessionAgentId } from "../agent-scope.js";
@@ -26,8 +27,10 @@ const REMINDER_CONTEXT_TOTAL_MAX = 700;
 const REMINDER_CONTEXT_MARKER = "\n\nRecent context:\n";
 
 // Flattened schema: runtime validates per-action requirements.
+// Schema is permissive to allow gpt-oss malformed inputs (mode/id instead of action).
+// Recovery logic in execute() normalizes these cases.
 const CronToolSchema = Type.Object({
-  action: stringEnum(CRON_ACTIONS),
+  action: Type.Optional(stringEnum(CRON_ACTIONS)), // Optional to allow recovery from mode/id
   gatewayUrl: Type.Optional(Type.String()),
   gatewayToken: Type.Optional(Type.String()),
   timeoutMs: Type.Optional(Type.Number()),
@@ -37,8 +40,8 @@ const CronToolSchema = Type.Object({
   id: Type.Optional(Type.String()),
   patch: Type.Optional(Type.Object({}, { additionalProperties: true })),
   text: Type.Optional(Type.String()),
-  mode: optionalStringEnum(CRON_WAKE_MODES),
-  runMode: optionalStringEnum(CRON_RUN_MODES),
+  mode: Type.Optional(Type.String()), // Permissive: allows any string, validated at runtime
+  runMode: Type.Optional(Type.String()), // Permissive: allows any string, validated at runtime
   contextMessages: Type.Optional(
     Type.Number({ minimum: 0, maximum: REMINDER_CONTEXT_MESSAGES_MAX }),
   ),
@@ -284,6 +287,74 @@ Use jobId as the canonical identifier; id is accepted for compatibility. Use con
     parameters: CronToolSchema,
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
+
+      // --- Recovery: infer action from mode/id when missing (gpt-oss compatibility) ---
+      // This handles cases where gpt-oss passes mode: "add" or id: "add" instead of action: "add"
+      if (!params.action || typeof params.action !== "string") {
+        const validActions = new Set<string>(CRON_ACTIONS);
+
+        // Helper: extract action from a string if it contains a valid action
+        const extractAction = (value: string): (typeof CRON_ACTIONS)[number] | null => {
+          // Exact match
+          if (validActions.has(value)) {
+            return value as (typeof CRON_ACTIONS)[number];
+          }
+          // Starts with action (e.g., "add-job" → "add")
+          for (const action of CRON_ACTIONS) {
+            if (value.startsWith(action + "-") || value.startsWith(action + "_")) {
+              return action as (typeof CRON_ACTIONS)[number];
+            }
+          }
+          // Contains action as word boundary (e.g., "test-add-job" → "add")
+          for (const action of CRON_ACTIONS) {
+            const pattern = new RegExp(`(^|[_-])${action}([_-]|$)`);
+            if (pattern.test(value)) {
+              return action as (typeof CRON_ACTIONS)[number];
+            }
+          }
+          return null;
+        };
+
+        // Priority 1: Check mode first (mode: "add" is more likely to be action than id: "add-job")
+        if (typeof params.mode === "string") {
+          const modeValue = params.mode;
+          // If mode is a valid action but not a valid mode value, it's likely meant to be action
+          if (
+            validActions.has(modeValue) &&
+            !CRON_WAKE_MODES.includes(modeValue as (typeof CRON_WAKE_MODES)[number]) &&
+            !CRON_RUN_MODES.includes(modeValue as (typeof CRON_RUN_MODES)[number])
+          ) {
+            params.action = modeValue as (typeof CRON_ACTIONS)[number];
+            delete params.mode;
+          } else {
+            // Try to extract action from mode value (e.g., "add-job" → "add")
+            const extracted = extractAction(modeValue);
+            if (extracted) {
+              params.action = extracted as (typeof CRON_ACTIONS)[number];
+              delete params.mode;
+            }
+          }
+        }
+
+        // Priority 2: Check id if action still not set
+        if (!params.action && typeof params.id === "string") {
+          const idValue = params.id;
+          // If id is exactly a valid action, use it
+          if (validActions.has(idValue)) {
+            params.action = idValue as (typeof CRON_ACTIONS)[number];
+            delete params.id;
+          } else {
+            // Try to extract action from id value (e.g., "add-job" → "add")
+            const extracted = extractAction(idValue);
+            if (extracted) {
+              params.action = extracted as (typeof CRON_ACTIONS)[number];
+              // Remove id when extracting action, as id is not used for "add" action
+              delete params.id;
+            }
+          }
+        }
+      }
+
       const action = readStringParam(params, "action", { required: true });
       const gatewayOpts: GatewayCallOptions = {
         gatewayUrl: readStringParam(params, "gatewayUrl", { trim: false }),
@@ -446,8 +517,15 @@ Use jobId as the canonical identifier; id is accepted for compatibility. Use con
           if (!id) {
             throw new Error("jobId required (id accepted for backward compatibility)");
           }
-          const runMode =
-            params.runMode === "due" || params.runMode === "force" ? params.runMode : "force";
+          // Runtime validation: runMode must be "due" or "force"
+          const runModeRaw = typeof params.runMode === "string" ? params.runMode : undefined;
+          const runMode = runModeRaw === "due" || runModeRaw === "force" ? runModeRaw : "force";
+          if (runModeRaw && runModeRaw !== "due" && runModeRaw !== "force") {
+            // Log warning but use default instead of throwing (graceful degradation)
+            logWarn(
+              `[cron-tool] Invalid runMode: "${runModeRaw}", using default "force". Valid values: "due", "force"`,
+            );
+          }
           return jsonResult(await callGatewayTool("cron.run", gatewayOpts, { id, mode: runMode }));
         }
         case "runs": {
@@ -459,10 +537,16 @@ Use jobId as the canonical identifier; id is accepted for compatibility. Use con
         }
         case "wake": {
           const text = readStringParam(params, "text", { required: true });
+          // Runtime validation: mode must be "now" or "next-heartbeat"
+          const modeRaw = typeof params.mode === "string" ? params.mode : undefined;
           const mode =
-            params.mode === "now" || params.mode === "next-heartbeat"
-              ? params.mode
-              : "next-heartbeat";
+            modeRaw === "now" || modeRaw === "next-heartbeat" ? modeRaw : "next-heartbeat";
+          if (modeRaw && modeRaw !== "now" && modeRaw !== "next-heartbeat") {
+            // Log warning but use default instead of throwing (graceful degradation)
+            logWarn(
+              `[cron-tool] Invalid wake mode: "${modeRaw}", using default "next-heartbeat". Valid values: "now", "next-heartbeat"`,
+            );
+          }
           return jsonResult(
             await callGatewayTool("wake", gatewayOpts, { mode, text }, { expectFinal: false }),
           );

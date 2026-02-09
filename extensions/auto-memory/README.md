@@ -1,17 +1,18 @@
 # Auto-Memory Plugin
 
-Plugin per OpenClaw che scrive automaticamente nella memoria (`memory/YYYY-MM-DD.md`) i fatti importanti estratti dalle conversazioni.
+Plugin for OpenClaw that automatically writes important facts extracted from conversations to memory files (`memory/YYYY-MM-DD.md`).
 
-## Funzionalità
+## Features
 
-- **Analisi automatica**: Analizza le conversazioni per estrarre fatti importanti, decisioni e preferenze
-- **Scrittura periodica**: Scrive nella memoria ogni N messaggi (configurabile, default: 5)
-- **Notifiche**: Notifica l'utente nella chat quando aggiorna la memoria
-- **Filtraggio per importanza**: Salva solo i fatti con un'importanza superiore alla soglia configurata
+- **Automatic analysis**: Analyzes conversations to extract important facts, decisions, and preferences
+- **Periodic writing**: Writes to memory every N messages (configurable, default: 5)
+- **Notifications**: Notifies the user in chat when memory is updated
+- **Importance filtering**: Only saves facts with importance above a configured threshold
+- **Model-aware**: Uses the primary model from your config (no hardcoded provider/model)
 
-## Configurazione
+## Configuration
 
-Aggiungi la configurazione nel file `openclaw.json`:
+Add the configuration in `openclaw.json`:
 
 ```json
 {
@@ -21,56 +22,57 @@ Aggiungi la configurazione nel file `openclaw.json`:
       "messageThreshold": 5,
       "minImportance": 0.7,
       "notificationEnabled": true,
-      "notificationMessage": "💾 Memoria aggiornata"
+      "notificationMessage": "💾 Memory updated"
     }
   }
 }
 ```
 
-### Opzioni
+### Options
 
-- `enabled` (boolean, default: `true`): Abilita/disabilita il plugin
-- `messageThreshold` (number, default: `5`): Numero di messaggi dopo i quali analizzare e scrivere nella memoria
-- `minImportance` (number, default: `0.7`): Soglia minima di importanza (0-1) per i fatti da salvare
-- `notificationEnabled` (boolean, default: `true`): Se inviare una notifica quando la memoria viene aggiornata
-- `notificationMessage` (string, default: `"💾 Memoria aggiornata"`): Messaggio da inviare come notifica
+- `enabled` (boolean, default: `true`): Enable/disable the plugin
+- `messageThreshold` (number, default: `5`): Number of messages after which to analyze and write to memory
+- `minImportance` (number, default: `0.7`): Minimum importance threshold (0-1) for facts to be saved
+- `notificationEnabled` (boolean, default: `true`): Whether to send a notification when memory is updated
+- `notificationMessage` (string, default: `"💾 Memory updated"`): Message to send as notification
 
-## Come funziona
+## How it works
 
-1. Il plugin registra un hook `agent_end` che viene chiamato dopo ogni esecuzione dell'agente
-2. Conta i messaggi processati per sessione
-3. Quando raggiunge la soglia configurata (`messageThreshold`), analizza la conversazione usando l'LLM
-4. Estrae fatti importanti, decisioni e preferenze
-5. Scrive i fatti nella memoria (`memory/YYYY-MM-DD.md`) organizzati per categoria
-6. Invia una notifica all'utente nella chat corrente
+1. The plugin registers an `agent_end` hook that is called after each agent execution
+2. It counts processed messages per session
+3. When it reaches the configured threshold (`messageThreshold`), it analyzes the conversation using the LLM
+4. It resolves the model from your config's `agents.defaults.model.primary` setting
+5. It extracts important facts, decisions, and preferences
+6. It writes the facts to `memory/YYYY-MM-DD.md` organized by category
+7. It sends a notification to the user in the current chat
 
-## Formato della memoria
+## Memory format
 
-I fatti vengono scritti in `memory/YYYY-MM-DD.md` con il seguente formato:
+Facts are written to `memory/YYYY-MM-DD.md` in the following format:
 
 ```markdown
 # 2026-02-08
 
-## 14:30
+## 02:30 PM
 
-### Decisioni
+### Decisions
 
-- Deciso di usare PostgreSQL per il nuovo progetto
+- Decided to use PostgreSQL for the new project
 
-### Preferenze
+### Preferences
 
-- L'utente preferisce ricevere notifiche via email
+- User prefers to receive notifications via email
 
-### Fatti
+### Facts
 
-- Il progetto deve essere completato entro fine mese
+- The project must be completed by end of month
 ```
 
-## Categorie
+## Categories
 
-I fatti vengono categorizzati in:
+Facts are categorized as:
 
-- **Decisioni**: Decisioni prese durante la conversazione
-- **Preferenze**: Preferenze dell'utente
-- **Informazioni personali**: Informazioni personali rilevanti
-- **Fatti**: Altri fatti importanti
+- **Decisions**: Decisions made during the conversation
+- **Preferences**: User preferences
+- **Personal Information**: Relevant personal information
+- **Facts**: Other important facts

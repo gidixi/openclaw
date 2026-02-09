@@ -33,7 +33,7 @@
       "notificationMessage": {
         "type": "string",
         "description": "Message to send as notification when memory is updated",
-        "default": "💾 Memoria aggiornata"
+        "default": "💾 Memory updated"
       }
     }
   }
