@@ -26,10 +26,14 @@ export async function writeToMemory(
     const dateStr = now.toISOString().split("T")[0]; // YYYY-MM-DD
     const memoryFilePath = path.join(memoryDir, `${dateStr}.md`);
 
-    // Read existing file or create new
-    let existingContent = "";
+    // Check if file exists and has header
+    let fileExists = false;
+    let hasHeader = false;
     try {
-      existingContent = await fs.readFile(memoryFilePath, "utf-8");
+      const existingContent = await fs.readFile(memoryFilePath, "utf-8");
+      fileExists = true;
+      // Check if file starts with the date header
+      hasHeader = existingContent.trim().startsWith(`# ${dateStr}`);
     } catch {
       // File doesn't exist, will create new
     }
@@ -69,12 +73,21 @@ export async function writeToMemory(
 
     const newEntry = entryLines.join("\n");
 
-    // Append to file (or create new)
-    const contentToWrite = existingContent
-      ? `${existingContent}\n\n${newEntry}`
-      : `# ${dateStr}\n\n${newEntry}`;
+    // If file doesn't exist or doesn't have header, write header first
+    if (!fileExists || !hasHeader) {
+      const header = `# ${dateStr}\n\n`;
+      if (fileExists && !hasHeader) {
+        // File exists but no header - prepend header to existing content
+        const existingContent = await fs.readFile(memoryFilePath, "utf-8");
+        await fs.writeFile(memoryFilePath, `${header}${existingContent}`, "utf-8");
+      } else {
+        // New file - write header
+        await fs.writeFile(memoryFilePath, header, "utf-8");
+      }
+    }
 
-    await fs.writeFile(memoryFilePath, contentToWrite, "utf-8");
+    // Append new entry to file (atomic operation, avoids race conditions)
+    await fs.appendFile(memoryFilePath, `\n${newEntry}`, "utf-8");
 
     return { success: true, filePath: memoryFilePath };
   } catch (err) {
