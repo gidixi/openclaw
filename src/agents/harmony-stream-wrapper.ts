@@ -255,7 +255,7 @@ function parseHarmonyBlocks(text: string): HarmonyBlock[] {
   // Handle all variations: with/without channel, with/without recipient, with/without constrain
   // Stop tokens: <|call|>, <|return|>, <|end|>
   const blockPattern =
-    /<\|start\|>([^<]*?)(?:<\|channel\|>([^<]*?))?(?:\s+to=([^\s<]+))?(?:\s+<\|constrain\|>([^<]+))?(?:<\|message\|>([\s\S]*?))(<\|call\||<\|return\||<\|end\|>)/g;
+    /<\|start\|>([^<]*?)(?:<\|channel\|>([^<]*?))?(?:\s+to=([^\s<]+))?(?:\s+<\|constrain\|>([^<]+))?(?:<\|message\|>([\s\S]*?))(<\|call\|>|<\|return\|>|<\|end\|>)/g;
 
   let match: RegExpExecArray | null;
   while ((match = blockPattern.exec(text)) !== null) {
@@ -683,6 +683,7 @@ async function pipeAndParseToolCalls(
     };
     output.push({ type: "error", reason: "error", error: errorMessage });
   }
+  output.end();
 }
 
 /**
