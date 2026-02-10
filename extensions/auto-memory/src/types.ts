@@ -4,6 +4,7 @@ export type AutoMemoryConfig = {
   minImportance?: number;
   notificationEnabled?: boolean;
   notificationMessage?: string;
+  maxMessagesContext?: number;
 };
 
 export type ExtractedFact = {
@@ -15,4 +16,10 @@ export type ExtractedFact = {
 export type AnalysisResult = {
   facts: ExtractedFact[];
   summary?: string;
+};
+
+export type MemorySummary = {
+  previousDecisions?: string[];
+  previousPreferences?: string[];
+  otherNotes?: string[];
 };

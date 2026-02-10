@@ -1,7 +1,9 @@
+import path from "node:path";
 import type { OpenClawPluginApi } from "../../src/plugins/types.js";
 import type { AutoMemoryConfig } from "./src/types.js";
 import { resolveAgentWorkspaceDir } from "../../src/agents/agent-scope.js";
 import { resolveAgentIdFromSessionKey } from "../../src/routing/session-key.js";
+import { readMemorySummary } from "./src/memory-reader.js";
 import { writeToMemory } from "./src/memory-writer.js";
 import { analyzeMessages } from "./src/message-analyzer.js";
 import { sendNotification } from "./src/notification.js";
@@ -19,6 +21,7 @@ export default function register(api: OpenClawPluginApi) {
   const minImportance = cfg.minImportance ?? 0.7;
   const notificationEnabled = cfg.notificationEnabled !== false;
   const notificationMessage = cfg.notificationMessage ?? "💾 Memory updated";
+  const maxMessagesContext = cfg.maxMessagesContext ?? 30;
 
   // Per-session message counter
   const messageCounts = new Map<string, number>();
@@ -66,6 +69,10 @@ export default function register(api: OpenClawPluginApi) {
 
       api.logger.info(`auto-memory: workspaceDir=${workspaceDir}, agentId=${agentId}`);
 
+      // Read existing memory summary for context
+      const memoryDir = path.join(workspaceDir, "memory");
+      const memorySummary = await readMemorySummary(memoryDir);
+
       // Analyze messages (pass logger for debug visibility)
       const analysis = await analyzeMessages(
         event.messages,
@@ -73,6 +80,8 @@ export default function register(api: OpenClawPluginApi) {
         workspaceDir,
         minImportance,
         api.logger,
+        memorySummary,
+        maxMessagesContext,
       );
 
       if (analysis.facts.length === 0) {

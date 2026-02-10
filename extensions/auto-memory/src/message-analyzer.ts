@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { OpenClawConfig } from "../../../src/config/config.js";
 import type { PluginLogger } from "../../../src/plugins/types.js";
-import type { AnalysisResult, ExtractedFact } from "./types.js";
+import type { AnalysisResult, ExtractedFact, MemorySummary } from "./types.js";
 
 type RunEmbeddedPiAgentFn = (params: Record<string, unknown>) => Promise<unknown>;
 
@@ -91,10 +91,16 @@ function extractTextFromMessage(msg: unknown): string {
   return "";
 }
 
-function collectConversationText(messages: unknown[]): string {
+/**
+ * Collects conversation text only from recent messages and user/assistant turns.
+ * `maxMessages` limits the number of recent messages included in the context.
+ */
+function collectConversationText(messages: unknown[], maxMessages: number = 30): string {
+  const recentMessages = messages.slice(-maxMessages);
   const texts: string[] = [];
-  for (const msg of messages) {
+  for (const msg of recentMessages) {
     const text = extractTextFromMessage(msg);
+    // Filter out commands and empty text
     if (text && !text.startsWith("/")) {
       texts.push(text);
     }
@@ -102,6 +108,9 @@ function collectConversationText(messages: unknown[]): string {
   return texts.join("\n\n");
 }
 
+/**
+ * Removes any code fences (e.g., ```json ... ```) from the text.
+ */
 function stripCodeFences(s: string): string {
   const trimmed = s.trim();
   const m = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
@@ -111,6 +120,9 @@ function stripCodeFences(s: string): string {
   return trimmed;
 }
 
+/**
+ * Extracts only non-error text payloads.
+ */
 function collectText(payloads: Array<{ text?: string; isError?: boolean }> | undefined): string {
   const texts = (payloads ?? [])
     .filter((p) => !p.isError && typeof p.text === "string")
@@ -118,22 +130,61 @@ function collectText(payloads: Array<{ text?: string; isError?: boolean }> | und
   return texts.join("\n").trim();
 }
 
+/**
+ * Formats a memory summary for inclusion in the prompt.
+ */
+function formatMemorySummary(summary?: MemorySummary): string {
+  if (!summary) return "No previous information known.";
+
+  const lines: string[] = [];
+  if (summary.previousDecisions?.length) {
+    lines.push("Previous decisions:");
+    lines.push(...summary.previousDecisions.map((d) => `- ${d}`));
+  }
+  if (summary.previousPreferences?.length) {
+    lines.push("Known preferences:");
+    lines.push(...summary.previousPreferences.map((p) => `- ${p}`));
+  }
+  if (summary.otherNotes?.length) {
+    lines.push("Other important points:");
+    lines.push(...summary.otherNotes.map((n) => `- ${n}`));
+  }
+
+  return lines.length > 0 ? lines.join("\n") : "No previous information known.";
+}
+
+/**
+ * Analyzes a conversation and extracts only the important facts, decisions, and preferences.
+ *
+ * @param messages - Conversation history (raw messages)
+ * @param config - OpenClaw configuration (to extract provider/model)
+ * @param workspaceDir - Workspace directory for temporary files
+ * @param minImportance - Minimum importance threshold (0-1) for facts
+ * @param logger - Optional logger for the plugin
+ * @param memorySummary - Optional summary of decisions/preferences already known
+ * @param maxMessagesContext - Maximum number of recent messages to include in the prompt
+ */
 export async function analyzeMessages(
   messages: unknown[],
   config: OpenClawConfig,
   workspaceDir: string,
   minImportance: number,
   logger?: PluginLogger,
+  memorySummary?: MemorySummary,
+  maxMessagesContext: number = 30,
 ): Promise<AnalysisResult> {
-  const conversationText = collectConversationText(messages);
+  const conversationText = collectConversationText(messages, maxMessagesContext);
   if (!conversationText.trim()) {
     logger?.info("auto-memory: no conversation text to analyze");
     return { facts: [] };
   }
 
-  logger?.info(`auto-memory: analyzing ${conversationText.length} chars of conversation`);
+  logger?.info(
+    `auto-memory: analyzing ${conversationText.length} chars of conversation ` +
+      `(${maxMessagesContext} recent messages)`,
+  );
 
-  // Resolve model from user config (same pattern as llm-task)
+  // Resolve provider/model from user config (same pattern as llm-task)
   const { provider, model } = resolveModelFromConfig(config);
   if (!provider || !model) {
     logger?.error(
@@ -145,7 +196,12 @@ export async function analyzeMessages(
 
   logger?.info(`auto-memory: using model ${provider}/${model}`);
 
-  const prompt = `Analyze this conversation and extract only the important facts, decisions, or preferences that should be remembered.
+  const summaryText = formatMemorySummary(memorySummary);
+
+  const prompt = `Information known so far:
+${summaryText}
+
+Analyze this recent conversation and extract only the important facts, decisions, or preferences that should be remembered.
 
 Respond in JSON format with an array of objects, each with:
 - fact: string describing the fact/decision/preference
@@ -170,14 +226,14 @@ Example response:
 
 If there are no important facts, respond with: {"facts": []}
 
-Conversation:
+Recent conversation:
 ${conversationText}`;
 
   const systemPrompt = [
     "You are an assistant that analyzes conversations to extract important information to remember.",
     "Return ONLY a valid JSON value.",
-    "Do not wrap in markdown fences.",
-    "Do not include commentary.",
+    "Do not include extra commentary.",
+    "Do not wrap the response in code fences.",
   ].join(" ");
 
   const fullPrompt = `${systemPrompt}\n\n${prompt}`;

@@ -34,6 +34,12 @@
         "type": "string",
         "description": "Message to send as notification when memory is updated",
         "default": "💾 Memory updated"
+      },
+      "maxMessagesContext": {
+        "type": "number",
+        "description": "Maximum number of recent messages to include in the analysis context",
+        "default": 30,
+        "minimum": 1
       }
     }
   }

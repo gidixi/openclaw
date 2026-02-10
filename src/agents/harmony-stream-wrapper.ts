@@ -61,12 +61,12 @@ function describeToolParameters(tool: Tool): string {
  * Convert JSON Schema property to TypeScript-like type definition for Harmony format.
  * Harmony uses TypeScript-like syntax: type tool_name = (_: { param: type }) => any;
  */
-function schemaPropertyToHarmonyType(prop: unknown, name: string): string {
+function schemaPropertyToHarmonyType(prop: unknown, name: string, isRequired: boolean): string {
   // oxlint-disable-next-line typescript/no-explicit-any
   const p = prop as any;
   const type = p.type ?? "any";
   const desc = p.description ? ` // ${p.description}` : "";
-  const optional = p.type && !Array.isArray(p.required) ? "?" : "";
+  const optional = isRequired ? "" : "?";
 
   if (type === "string") {
     return `${name}${optional}: string${desc}`;
@@ -104,7 +104,7 @@ function generateToolHarmonyDefinition(tool: Tool): string {
     // oxlint-disable-next-line typescript/no-explicit-any
     const p = prop as any;
     const isRequired = required.includes(name);
-    const typeDef = schemaPropertyToHarmonyType(prop, name);
+    const typeDef = schemaPropertyToHarmonyType(prop, name, isRequired);
     properties.push(typeDef);
   }
 
