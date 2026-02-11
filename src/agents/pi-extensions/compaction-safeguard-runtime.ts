@@ -1,6 +1,8 @@
 export type CompactionSafeguardRuntimeValue = {
   maxHistoryShare?: number;
   contextWindowTokens?: number;
+  /** Enable smart content-aware compaction instructions (default: true). */
+  enableSmartInstructions?: boolean;
 };
 
 // Session-scoped runtime registry keyed by object identity.

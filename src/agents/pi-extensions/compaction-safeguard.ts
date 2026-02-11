@@ -11,6 +11,10 @@ import {
   resolveContextWindowTokens,
   summarizeInStages,
 } from "../compaction.js";
+import {
+  generateSmartCompactionInstructions,
+  analyzeConversationContent,
+} from "../smart-compaction-instructions.js";
 import { getCompactionSafeguardRuntime } from "./compaction-safeguard-runtime.js";
 const FALLBACK_SUMMARY =
   "Summary unavailable due to context limits. Older messages were truncated.";
@@ -163,10 +167,58 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
     const { preparation, customInstructions, signal } = event;
     const { readFiles, modifiedFiles } = computeFileLists(preparation.fileOps);
     const fileOpsSummary = formatFileOperations(readFiles, modifiedFiles);
-    const toolFailures = collectToolFailures([
+
+    // Compute effective instructions: user-provided take precedence;
+    // otherwise generate context-aware hints (with silent fallback to undefined).
+    const allMessagesForAnalysis = [
       ...preparation.messagesToSummarize,
       ...preparation.turnPrefixMessages,
-    ]);
+    ];
+    let effectiveInstructions = customInstructions;
+    if (effectiveInstructions === undefined) {
+      // Feature flag: default true when not explicitly disabled
+      const smartEnabled =
+        getCompactionSafeguardRuntime(ctx.sessionManager)?.enableSmartInstructions !== false;
+      if (smartEnabled) {
+        try {
+          const analysis = analyzeConversationContent(allMessagesForAnalysis);
+          effectiveInstructions = generateSmartCompactionInstructions(allMessagesForAnalysis);
+          if (effectiveInstructions) {
+            const detected = [
+              analysis.hasCode && "code",
+              analysis.hasErrors && "errors",
+              analysis.hasExecCommands && "exec-commands",
+              analysis.hasDecisions && "decisions",
+              analysis.hasQuestions && "questions",
+              analysis.isSubagentTask && "subagent",
+            ]
+              .filter(Boolean)
+              .join(", ");
+            console.log(
+              `[Compaction] Smart instructions generated (${allMessagesForAnalysis.length} messages, detected: ${detected || "none"})`,
+            );
+          } else {
+            console.log(
+              `[Compaction] Smart instructions: no patterns detected in ${allMessagesForAnalysis.length} messages, using default prompt`,
+            );
+          }
+        } catch (error) {
+          console.warn(
+            `[Compaction] Smart instructions generation failed, falling back to default: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          // Silent fallback — use no custom instructions
+          effectiveInstructions = undefined;
+        }
+      } else {
+        console.log("[Compaction] Smart instructions disabled by config, using default prompt");
+      }
+    } else {
+      console.log("[Compaction] Using user-provided custom instructions");
+    }
+
+    const toolFailures = collectToolFailures(allMessagesForAnalysis);
     const toolFailureSection = formatToolFailuresSection(toolFailures);
     const fallbackSummary = `${FALLBACK_SUMMARY}${toolFailureSection}${fileOpsSummary}`;
 
@@ -253,7 +305,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
                   reserveTokens: Math.max(1, Math.floor(preparation.settings.reserveTokens)),
                   maxChunkTokens: droppedMaxChunkTokens,
                   contextWindow: contextWindowTokens,
-                  customInstructions,
+                  customInstructions: effectiveInstructions,
                   previousSummary: preparation.previousSummary,
                 });
               } catch (droppedError) {
@@ -286,7 +338,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         reserveTokens,
         maxChunkTokens,
         contextWindow: contextWindowTokens,
-        customInstructions,
+        customInstructions: effectiveInstructions,
         previousSummary: effectivePreviousSummary,
       });
 
