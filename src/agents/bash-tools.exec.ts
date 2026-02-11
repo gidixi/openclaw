@@ -1002,6 +1002,8 @@ export function createExecTool(
         const hostSecurity = minSecurity(security, approvals.agent.security);
         const hostAsk = maxAsk(ask, approvals.agent.ask);
         const askFallback = approvals.agent.askFallback;
+        // Bypass approvals if security is full and ask is off
+        const bypassApprovalsNode = hostSecurity === "full" && hostAsk === "off";
         if (hostSecurity === "deny") {
           throw new Error("exec denied: host=node security=deny");
         }
@@ -1088,12 +1090,14 @@ export function createExecTool(
             // Fall back to requiring approval if node approvals cannot be fetched.
           }
         }
-        const requiresAsk = requiresExecApproval({
-          ask: hostAsk,
-          security: hostSecurity,
-          analysisOk,
-          allowlistSatisfied,
-        });
+        const requiresAsk = bypassApprovalsNode
+          ? false
+          : requiresExecApproval({
+              ask: hostAsk,
+              security: hostSecurity,
+              analysisOk,
+              allowlistSatisfied,
+            });
         const commandText = params.command;
         const invokeTimeoutMs = Math.max(
           10_000,
@@ -1121,6 +1125,40 @@ export function createExecTool(
             },
             idempotencyKey: crypto.randomUUID(),
           }) satisfies Record<string, unknown>;
+
+        // Bypass: if security is full and ask is off, execute directly without approval
+        if (bypassApprovalsNode) {
+          const startedAt = Date.now();
+          const raw = await callGatewayTool(
+            "node.invoke",
+            { timeoutMs: invokeTimeoutMs },
+            buildInvokeParams(true, "allow-always"),
+          );
+          const payload =
+            raw && typeof raw === "object" ? (raw as { payload?: unknown }).payload : undefined;
+          const payloadObj =
+            payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+          const stdout = typeof payloadObj.stdout === "string" ? payloadObj.stdout : "";
+          const stderr = typeof payloadObj.stderr === "string" ? payloadObj.stderr : "";
+          const errorText = typeof payloadObj.error === "string" ? payloadObj.error : "";
+          const success = typeof payloadObj.success === "boolean" ? payloadObj.success : false;
+          const exitCode = typeof payloadObj.exitCode === "number" ? payloadObj.exitCode : null;
+          return {
+            content: [
+              {
+                type: "text",
+                text: stdout || stderr || errorText || "",
+              },
+            ],
+            details: {
+              status: success ? "completed" : "failed",
+              exitCode,
+              durationMs: Date.now() - startedAt,
+              aggregated: [stdout, stderr, errorText].filter(Boolean).join("\n"),
+              cwd: workdir,
+            } satisfies ExecToolDetails,
+          };
+        }
 
         if (requiresAsk) {
           const approvalId = crypto.randomUUID();
@@ -1280,6 +1318,8 @@ export function createExecTool(
         const hostSecurity = minSecurity(security, approvals.agent.security);
         const hostAsk = maxAsk(ask, approvals.agent.ask);
         const askFallback = approvals.agent.askFallback;
+        // Bypass approvals if security is full and ask is off
+        const bypassApprovalsGateway = hostSecurity === "full" && hostAsk === "off";
         if (hostSecurity === "deny") {
           throw new Error("exec denied: host=gateway security=deny");
         }
@@ -1295,12 +1335,97 @@ export function createExecTool(
         const analysisOk = allowlistEval.analysisOk;
         const allowlistSatisfied =
           hostSecurity === "allowlist" && analysisOk ? allowlistEval.allowlistSatisfied : false;
-        const requiresAsk = requiresExecApproval({
-          ask: hostAsk,
-          security: hostSecurity,
-          analysisOk,
-          allowlistSatisfied,
-        });
+        const requiresAsk = bypassApprovalsGateway
+          ? false
+          : requiresExecApproval({
+              ask: hostAsk,
+              security: hostSecurity,
+              analysisOk,
+              allowlistSatisfied,
+            });
+        const commandText = params.command;
+        const effectiveTimeout =
+          typeof params.timeout === "number" ? params.timeout : defaultTimeoutSec;
+
+        // Bypass: if security is full and ask is off, execute directly without approval
+        if (bypassApprovalsGateway) {
+          if (allowlistMatches.length > 0) {
+            const seen = new Set<string>();
+            for (const match of allowlistMatches) {
+              if (seen.has(match.pattern)) {
+                continue;
+              }
+              seen.add(match.pattern);
+              recordAllowlistUse(
+                approvals.file,
+                agentId,
+                match,
+                commandText,
+                allowlistEval.segments[0]?.resolution?.resolvedPath ?? undefined,
+              );
+            }
+          }
+
+          const startedAt = Date.now();
+          let run: ExecProcessHandle | null = null;
+          try {
+            run = await runExecProcess({
+              command: commandText,
+              workdir,
+              env,
+              sandbox: undefined,
+              containerWorkdir: null,
+              usePty: params.pty === true && !sandbox,
+              warnings,
+              maxOutput,
+              pendingMaxOutput,
+              notifyOnExit: false,
+              scopeKey: defaults?.scopeKey,
+              sessionKey: notifySessionKey,
+              timeoutSec: effectiveTimeout,
+            });
+          } catch (err) {
+            const errorText = String(err ?? "unknown error");
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: errorText,
+                },
+              ],
+              details: {
+                status: "failed",
+                exitCode: null,
+                durationMs: Date.now() - startedAt,
+                aggregated: errorText,
+                cwd: workdir,
+              } satisfies ExecToolDetails,
+            };
+          }
+
+          markBackgrounded(run.session);
+
+          const outcome = await run.promise;
+          const aggregated = outcome.aggregated || "";
+          const exitCode = outcome.exitCode ?? null;
+          const status = exitCode === 0 ? "completed" : "failed";
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: aggregated,
+              },
+            ],
+            details: {
+              status,
+              exitCode,
+              durationMs: Date.now() - startedAt,
+              aggregated,
+              cwd: workdir,
+            } satisfies ExecToolDetails,
+          };
+        }
 
         if (requiresAsk) {
           const approvalId = crypto.randomUUID();

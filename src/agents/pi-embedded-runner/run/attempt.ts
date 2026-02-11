@@ -1,7 +1,15 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { ImageContent } from "@mariozechner/pi-ai";
 import { streamSimple } from "@mariozechner/pi-ai";
-import { createAgentSession, SessionManager, SettingsManager } from "@mariozechner/pi-coding-agent";
+import {
+  createAgentSession,
+  SessionManager,
+  SettingsManager,
+  shouldCompact,
+  getLastAssistantUsage,
+  estimateTokens,
+  calculateContextTokens,
+} from "@mariozechner/pi-coding-agent";
 import fs from "node:fs/promises";
 import os from "node:os";
 import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
@@ -64,6 +72,7 @@ import { resolveTranscriptPolicy } from "../../transcript-policy.js";
 import { DEFAULT_BOOTSTRAP_FILENAME } from "../../workspace.js";
 import { isAbortError } from "../abort.js";
 import { appendCacheTtlTimestamp, isCacheTtlEligibleProvider } from "../cache-ttl.js";
+import { compactEmbeddedPiSessionDirect } from "../compact.js";
 import { buildEmbeddedExtensionPaths } from "../extensions.js";
 import { applyExtraParamsToAgent } from "../extra-params.js";
 import {
@@ -833,6 +842,83 @@ export async function runEmbeddedAttempt(
               provider: params.provider,
               modelId: params.modelId,
             });
+          }
+
+          // Preventive compaction: check if we should compact before sending the prompt
+          // This avoids context overflow errors by compacting proactively when reaching 95% of context window
+          const compactionSettings = settingsManager.getCompactionSettings();
+          if (compactionSettings.enabled && params.model.contextWindow) {
+            // Estimate context tokens: use last assistant usage if available, otherwise estimate all messages
+            const entries = sessionManager.getEntries();
+            const lastUsage = getLastAssistantUsage(entries);
+            let contextTokens: number;
+            if (lastUsage) {
+              contextTokens = calculateContextTokens(lastUsage);
+              // Add tokens for messages after the last usage
+              const lastUsageIndex = entries.findIndex(
+                (e) =>
+                  e.type === "message" &&
+                  e.message.role === "assistant" &&
+                  "usage" in e.message &&
+                  e.message.usage === lastUsage,
+              );
+              if (lastUsageIndex >= 0) {
+                for (let i = lastUsageIndex + 1; i < entries.length; i++) {
+                  const entry = entries[i];
+                  if (entry.type === "message") {
+                    contextTokens += estimateTokens(entry.message);
+                  }
+                }
+              }
+            } else {
+              // No usage data available, estimate all messages
+              contextTokens = 0;
+              for (const message of activeSession.messages) {
+                contextTokens += estimateTokens(message);
+              }
+            }
+            // Compact when reaching 95% of context window
+            const threshold95Percent = Math.floor(params.model.contextWindow * 0.95);
+            const shouldCompactPreventively = contextTokens >= threshold95Percent;
+            if (shouldCompactPreventively) {
+              const usagePercent = ((contextTokens / params.model.contextWindow) * 100).toFixed(1);
+              log.info(
+                `preventive compaction triggered: contextTokens=${contextTokens} (${usagePercent}%) contextWindow=${params.model.contextWindow} threshold=95% for ${params.provider}/${params.modelId}`,
+              );
+              const compactResult = await compactEmbeddedPiSessionDirect({
+                sessionId: params.sessionId,
+                sessionKey: params.sessionKey,
+                messageChannel: params.messageChannel,
+                messageProvider: params.messageProvider,
+                agentAccountId: params.agentAccountId,
+                authProfileId: undefined, // Use default profile for compaction
+                sessionFile: params.sessionFile,
+                workspaceDir: effectiveWorkspace,
+                agentDir,
+                config: params.config,
+                skillsSnapshot: params.skillsSnapshot,
+                senderIsOwner: params.senderIsOwner,
+                provider: params.provider,
+                model: params.modelId,
+                thinkLevel: params.thinkLevel,
+                reasoningLevel: params.reasoningLevel,
+                bashElevated: params.bashElevated,
+                extraSystemPrompt: params.extraSystemPrompt,
+                ownerNumbers: params.ownerNumbers,
+              });
+              if (compactResult.compacted) {
+                // Reload messages after compaction
+                const sessionContext = sessionManager.buildSessionContext();
+                activeSession.agent.replaceMessages(sessionContext.messages);
+                log.info(
+                  `preventive compaction succeeded for ${params.provider}/${params.modelId}; continuing with prompt`,
+                );
+              } else {
+                log.warn(
+                  `preventive compaction failed for ${params.provider}/${params.modelId}: ${compactResult.reason ?? "unknown reason"}`,
+                );
+              }
+            }
           }
 
           // Only pass images option if there are actually images to pass
