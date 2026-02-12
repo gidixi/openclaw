@@ -385,11 +385,15 @@ function extractHarmonyContent(text: string): string {
 /**
  * Extract tool name from potentially namespaced name.
  * Harmony supports namespaces like "namespace::tool_name" or "namespace.tool_name"
+ * Also strips leaked Harmony control tokens (e.g., <|channel|>json) that gpt-oss sometimes emits.
  */
 function extractToolName(name: string): string {
+  // First, strip any leaked Harmony control tokens (e.g., "exec<|channel|>json" → "exec")
+  let cleaned = stripControlTokens(name);
+
   // Handle namespace::tool_name format
-  if (name.includes("::")) {
-    const parts = name.split("::");
+  if (cleaned.includes("::")) {
+    const parts = cleaned.split("::");
     const toolName = parts[parts.length - 1]; // Take last part after ::
     if (toolName !== name) {
       logDebug(`harmony-wrapper: Extracted tool name from namespace: "${name}" → "${toolName}"`);
@@ -397,15 +401,21 @@ function extractToolName(name: string): string {
     return toolName;
   }
   // Handle namespace.tool_name format
-  if (name.includes(".")) {
-    const parts = name.split(".");
+  if (cleaned.includes(".")) {
+    const parts = cleaned.split(".");
     const toolName = parts[parts.length - 1]; // Take last part after .
     if (toolName !== name) {
       logDebug(`harmony-wrapper: Extracted tool name from namespace: "${name}" → "${toolName}"`);
     }
     return toolName;
   }
-  return name;
+
+  // If control tokens were stripped, log it
+  if (cleaned !== name) {
+    logDebug(`harmony-wrapper: Stripped control tokens from tool name: "${name}" → "${cleaned}"`);
+  }
+
+  return cleaned;
 }
 
 /**

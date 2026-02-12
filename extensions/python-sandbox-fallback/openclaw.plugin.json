@@ -1,0 +1,22 @@
+{
+  "id": "python-sandbox-fallback",
+  "name": "Python Sandbox Fallback",
+  "description": "Automatically suggests using python-sandbox when standard tools fail or are insufficient",
+  "kind": "memory",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "description": "Enable or disable the python-sandbox-fallback plugin",
+        "default": true
+      },
+      "autoSuggest": {
+        "type": "boolean",
+        "description": "Automatically suggest python-sandbox in system prompt",
+        "default": true
+      }
+    }
+  }
+}

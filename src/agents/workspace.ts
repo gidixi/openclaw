@@ -66,7 +66,8 @@ export type WorkspaceBootstrapFileName =
   | typeof DEFAULT_HEARTBEAT_FILENAME
   | typeof DEFAULT_BOOTSTRAP_FILENAME
   | typeof DEFAULT_MEMORY_FILENAME
-  | typeof DEFAULT_MEMORY_ALT_FILENAME;
+  | typeof DEFAULT_MEMORY_ALT_FILENAME
+  | string; // Allow relative paths for files in subdirectories (e.g., "skills/python-sandbox/SKILL.md")
 
 export type WorkspaceBootstrapFile = {
   name: WorkspaceBootstrapFileName;
@@ -236,6 +237,88 @@ async function resolveMemoryBootstrapEntries(
   return deduped;
 }
 
+/**
+ * Recursively finds SKILL.md files in a directory structure.
+ * Returns entries with relative paths from the workspace root.
+ */
+async function findSkillFilesInDirectory(
+  baseDir: string,
+  subDir: string,
+  relativePath: string,
+): Promise<Array<{ name: WorkspaceBootstrapFileName; filePath: string }>> {
+  const entries: Array<{ name: WorkspaceBootstrapFileName; filePath: string }> = [];
+  const fullPath = path.join(baseDir, subDir);
+
+  try {
+    const items = await fs.readdir(fullPath, { withFileTypes: true });
+    for (const item of items) {
+      if (item.isDirectory()) {
+        // Recursively search in subdirectories
+        // Normalize path separators to forward slashes for cross-platform compatibility
+        const subRelativePath = path.join(relativePath, item.name).replace(/\\/g, "/");
+        const subEntries = await findSkillFilesInDirectory(
+          baseDir,
+          path.join(subDir, item.name),
+          subRelativePath,
+        );
+        entries.push(...subEntries);
+      } else if (item.isFile() && item.name === "SKILL.md") {
+        // Found a SKILL.md file
+        const filePath = path.join(fullPath, item.name);
+        // Normalize path separators to forward slashes for cross-platform compatibility
+        const name = path
+          .join(relativePath, item.name)
+          .replace(/\\/g, "/") as WorkspaceBootstrapFileName;
+        entries.push({ name, filePath });
+      }
+    }
+  } catch {
+    // Directory doesn't exist or can't be read, skip silently
+  }
+
+  return entries;
+}
+
+/**
+ * Finds all SKILL.md files in workspace subdirectories (skills/, tools/, etc.)
+ */
+async function resolveWorkspaceSubdirectoryFiles(
+  resolvedDir: string,
+): Promise<Array<{ name: WorkspaceBootstrapFileName; filePath: string }>> {
+  const entries: Array<{ name: WorkspaceBootstrapFileName; filePath: string }> = [];
+
+  // Search in skills/ directory
+  const skillsEntries = await findSkillFilesInDirectory(resolvedDir, "skills", "skills");
+  entries.push(...skillsEntries);
+
+  // Search in tools/ directory
+  const toolsEntries = await findSkillFilesInDirectory(resolvedDir, "tools", "tools");
+  entries.push(...toolsEntries);
+
+  // Optionally search for .md files in scripts/ and sandbox/ directories
+  // (only top-level .md files, not recursive)
+  for (const subDir of ["scripts", "sandbox"]) {
+    const subDirPath = path.join(resolvedDir, subDir);
+    try {
+      const items = await fs.readdir(subDirPath, { withFileTypes: true });
+      for (const item of items) {
+        if (item.isFile() && item.name.endsWith(".md")) {
+          const filePath = path.join(subDirPath, item.name);
+          // Normalize path separators to forward slashes for cross-platform compatibility
+          const name = path
+            .join(subDir, item.name)
+            .replace(/\\/g, "/") as WorkspaceBootstrapFileName;
+          entries.push({ name, filePath });
+        }
+      }
+    } catch {
+      // Directory doesn't exist or can't be read, skip silently
+    }
+  }
+
+  return entries;
+}
+
 export async function loadWorkspaceBootstrapFiles(dir: string): Promise<WorkspaceBootstrapFile[]> {
   const resolvedDir = resolveUserPath(dir);
 
@@ -274,6 +357,9 @@ export async function loadWorkspaceBootstrapFiles(dir: string): Promise<Workspac
   ];
 
   entries.push(...(await resolveMemoryBootstrapEntries(resolvedDir)));
+
+  // Add files from workspace subdirectories (skills/, tools/, scripts/, sandbox/)
+  entries.push(...(await resolveWorkspaceSubdirectoryFiles(resolvedDir)));
 
   const result: WorkspaceBootstrapFile[] = [];
   for (const entry of entries) {
