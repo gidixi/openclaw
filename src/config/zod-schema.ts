@@ -573,7 +573,7 @@ export const OpenClawSchema = z
                 enabled: z.boolean().optional(),
                 config: z.record(z.string(), z.unknown()).optional(),
               })
-              .strict(),
+              .passthrough(), // Allow additional keys (they will be normalized into config)
           )
           .optional(),
         installs: z

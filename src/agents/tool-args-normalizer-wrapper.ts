@@ -63,7 +63,51 @@ function normalizeToolCallArgs(
     return normalizeToolParams(inner) ?? inner;
   }
 
-  // 2. Schema-based normalization (if tool is available)
+  // 2. Special handling for memory_search tool: prevent maxResults → minScore confusion
+  // MUST be done BEFORE schema-based normalization to prevent incorrect conversions
+  if (toolName === "memory_search") {
+    let changed = false;
+
+    // If minScore is > 1, it's likely maxResults confused as minScore
+    if ("minScore" in record && typeof record.minScore === "number") {
+      const minScoreValue = record.minScore;
+      if (minScoreValue > 1 && !("maxResults" in record)) {
+        // This is definitely maxResults, not minScore
+        record.maxResults = minScoreValue;
+        delete record.minScore;
+        changed = true;
+        logDebug(
+          `[tool-normalizer] Fixed memory_search (early): minScore=${minScoreValue} > 1, converted to maxResults=${minScoreValue}`,
+        );
+      } else if (minScoreValue > 1 && "maxResults" in record) {
+        // Both exist, but minScore > 1 is invalid - remove it
+        delete record.minScore;
+        changed = true;
+        logDebug(
+          `[tool-normalizer] Fixed memory_search (early): removed invalid minScore=${minScoreValue} (> 1)`,
+        );
+      }
+    }
+
+    // If maxResults is present and minScore equals it and > 1, remove minScore
+    if ("maxResults" in record && typeof record.maxResults === "number") {
+      const maxResultsValue = record.maxResults;
+      if (
+        "minScore" in record &&
+        typeof record.minScore === "number" &&
+        record.minScore === maxResultsValue &&
+        maxResultsValue > 1
+      ) {
+        delete record.minScore;
+        changed = true;
+        logDebug(
+          `[tool-normalizer] Fixed memory_search (early): removed confused minScore=${maxResultsValue}, keeping maxResults=${maxResultsValue}`,
+        );
+      }
+    }
+  }
+
+  // 2.5. Schema-based normalization (if tool is available)
   if (toolName && tools) {
     const tool = tools.find((t) => t.name === toolName);
     if (tool && tool.parameters) {
@@ -73,6 +117,53 @@ function normalizeToolCallArgs(
         tool as AnyAgentTool,
       );
       if (normalized) {
+        // Apply memory_search fix AFTER schema normalization to fix any incorrect conversions
+        if (toolName === "memory_search") {
+          let changed = false;
+          const fixed = { ...normalized };
+
+          // If minScore is > 1, it's likely maxResults confused as minScore
+          if ("minScore" in fixed && typeof fixed.minScore === "number") {
+            const minScoreValue = fixed.minScore;
+            if (minScoreValue > 1 && !("maxResults" in fixed)) {
+              // This is definitely maxResults, not minScore
+              fixed.maxResults = minScoreValue;
+              delete fixed.minScore;
+              changed = true;
+              logDebug(
+                `[tool-normalizer] Fixed memory_search (post-schema): minScore=${minScoreValue} > 1, converted to maxResults=${minScoreValue}`,
+              );
+            } else if (minScoreValue > 1 && "maxResults" in fixed) {
+              // Both exist, but minScore > 1 is invalid - remove it
+              delete fixed.minScore;
+              changed = true;
+              logDebug(
+                `[tool-normalizer] Fixed memory_search (post-schema): removed invalid minScore=${minScoreValue} (> 1)`,
+              );
+            }
+          }
+
+          // If maxResults is present and minScore equals it and > 1, remove minScore
+          if ("maxResults" in fixed && typeof fixed.maxResults === "number") {
+            const maxResultsValue = fixed.maxResults;
+            if (
+              "minScore" in fixed &&
+              typeof fixed.minScore === "number" &&
+              fixed.minScore === maxResultsValue &&
+              maxResultsValue > 1
+            ) {
+              delete fixed.minScore;
+              changed = true;
+              logDebug(
+                `[tool-normalizer] Fixed memory_search (post-schema): removed confused minScore=${maxResultsValue}, keeping maxResults=${maxResultsValue}`,
+              );
+            }
+          }
+
+          if (changed) {
+            return fixed;
+          }
+        }
         return normalized;
       }
     }

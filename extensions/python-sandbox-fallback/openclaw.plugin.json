@@ -2,7 +2,6 @@
   "id": "python-sandbox-fallback",
   "name": "Python Sandbox Fallback",
   "description": "Automatically suggests using python-sandbox when standard tools fail or are insufficient",
-  "kind": "memory",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

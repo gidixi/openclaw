@@ -76,3 +76,4 @@ USER.md
 .agent/*.json
 !.agent/workflows/
 local/
+~/.cache/openclaw/models/hf_ggml-org_embeddinggemma-300M-Q8_0.gguf

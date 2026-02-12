@@ -54,9 +54,21 @@ const normalizePluginEntries = (entries: unknown): NormalizedPluginsConfig["entr
       continue;
     }
     const entry = value as Record<string, unknown>;
+    const enabled = typeof entry.enabled === "boolean" ? entry.enabled : undefined;
+
+    // If "config" key exists, use it; otherwise, use all properties except "enabled" as config
+    let config: unknown;
+    if ("config" in entry) {
+      config = entry.config;
+    } else {
+      // Extract all properties except "enabled" into config
+      const { enabled: _, ...rest } = entry;
+      config = Object.keys(rest).length > 0 ? rest : undefined;
+    }
+
     normalized[key] = {
-      enabled: typeof entry.enabled === "boolean" ? entry.enabled : undefined,
-      config: "config" in entry ? entry.config : undefined,
+      enabled,
+      config,
     };
   }
   return normalized;

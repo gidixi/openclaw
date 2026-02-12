@@ -5,6 +5,15 @@ export type AutoMemoryConfig = {
   notificationEnabled?: boolean;
   notificationMessage?: string;
   maxMessagesContext?: number;
+  // LanceDB configuration (required - plugin only works with embeddings)
+  lancedb?: {
+    dbPath?: string;
+  };
+  // Local embedding configuration (required - plugin only works with embeddings)
+  embedding?: {
+    modelPath?: string;
+    modelCacheDir?: string;
+  };
 };
 
 export type ExtractedFact = {

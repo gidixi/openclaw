@@ -54,6 +54,35 @@ export async function getMemorySearchManager(params: {
     }
   }
 
+  // Check if auto-memory plugin is enabled and use LanceDBMemoryManager if available
+  // The plugin registers a factory function in globalThis when it loads
+  try {
+    const autoMemoryEntry = params.cfg.plugins?.entries?.["auto-memory"];
+    if (autoMemoryEntry && typeof autoMemoryEntry === "object" && "enabled" in autoMemoryEntry) {
+      const autoMemoryConfig = autoMemoryEntry as {
+        enabled?: boolean;
+        lancedb?: unknown;
+        embedding?: unknown;
+      };
+      if (autoMemoryConfig.enabled && autoMemoryConfig.lancedb && autoMemoryConfig.embedding) {
+        const factory = (globalThis as any).__openclawAutoMemoryFactory;
+        if (typeof factory === "function") {
+          try {
+            const manager = factory(params.cfg, params.agentId, autoMemoryConfig);
+            if (manager) {
+              return { manager };
+            }
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            log.warn(`auto-memory manager unavailable; falling back to builtin: ${message}`);
+          }
+        }
+      }
+    }
+  } catch {
+    // Ignore errors checking auto-memory config
+  }
+
   try {
     const { MemoryIndexManager } = await import("./manager.js");
     const manager = await MemoryIndexManager.get(params);

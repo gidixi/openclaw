@@ -1,8 +1,7 @@
 {
   "id": "auto-memory",
   "name": "Auto Memory",
-  "description": "Automatically writes important facts and decisions to memory files",
-  "kind": "memory",
+  "description": "Automatically extracts important facts and stores them in LanceDB with local embeddings for semantic search",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -40,6 +39,35 @@
         "description": "Maximum number of recent messages to include in the analysis context",
         "default": 30,
         "minimum": 1
+      },
+      "lancedb": {
+        "type": "object",
+        "description": "LanceDB configuration (required - plugin only works with embeddings)",
+        "additionalProperties": false,
+        "properties": {
+          "dbPath": {
+            "type": "string",
+            "description": "Path to LanceDB database directory",
+            "default": "~/.openclaw/memory/auto-memory-lancedb"
+          }
+        }
+      },
+      "embedding": {
+        "type": "object",
+        "description": "Local embedding configuration (required - plugin only works with embeddings)",
+        "additionalProperties": false,
+        "properties": {
+          "modelPath": {
+            "type": "string",
+            "description": "Path to embedding model (GGUF format or HuggingFace URI)",
+            "default": "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf"
+          },
+          "modelCacheDir": {
+            "type": "string",
+            "description": "Directory to cache downloaded models",
+            "default": "~/.cache/openclaw/models"
+          }
+        }
       }
     }
   }

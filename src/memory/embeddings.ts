@@ -100,6 +100,8 @@ async function createLocalEmbeddingProvider(
       embeddingModel = await llama.loadModel({ modelPath: resolved });
     }
     if (!embeddingContext) {
+      // Note: node-llama-cpp uses all available CPU threads by default for embedding
+      // The threading is handled internally by the llama.cpp library
       embeddingContext = await embeddingModel.createEmbeddingContext();
     }
     return embeddingContext;

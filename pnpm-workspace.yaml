@@ -5,6 +5,8 @@ packages:
   - extensions/*
 
 onlyBuiltDependencies:
+  - "@lancedb/lancedb"
+  - "@lancedb/lancedb-linux-x64-gnu"
   - "@lydell/node-pty"
   - "@matrix-org/matrix-sdk-crypto-nodejs"
   - "@napi-rs/canvas"

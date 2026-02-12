@@ -162,8 +162,8 @@ function schemaDeepEqual(a: unknown, b: unknown): boolean {
     if (!aProps || !bProps) {
       return aProps === bProps;
     }
-    const aKeys = Object.keys(aProps).sort();
-    const bKeys = Object.keys(bProps).sort();
+    const aKeys = Object.keys(aProps).toSorted();
+    const bKeys = Object.keys(bProps).toSorted();
     if (aKeys.length !== bKeys.length) {
       return false;
     }
@@ -330,6 +330,35 @@ export function normalizeToolParamsFromSchema(
   if (aliases && aliases.size > 0) {
     for (const [alias, original] of aliases.entries()) {
       if (alias in normalized && !(original in normalized)) {
+        // Special case: prevent maxResults → minScore conversion for memory_search
+        // Both are numbers but serve different purposes (maxResults is count, minScore is 0-1 threshold)
+        if (
+          tool?.name === "memory_search" &&
+          ((alias === "maxResults" && original === "minScore") ||
+            (alias === "minScore" && original === "maxResults"))
+        ) {
+          // Check if the value makes sense for the target parameter
+          const value = normalized[alias];
+          if (typeof value === "number") {
+            // If value > 1, it's definitely maxResults, not minScore
+            if (value > 1 && original === "minScore") {
+              // Don't convert - this is maxResults, not minScore
+              logDebug(
+                `[schema-normalizer] Skipped alias conversion for memory_search: ${alias}=${value} → ${original} (value > 1, likely maxResults)`,
+              );
+              continue;
+            }
+            // If value <= 1 and we're converting to maxResults, it might be minScore
+            if (value <= 1 && original === "maxResults" && alias === "minScore") {
+              // This could be a valid minScore, but we should keep it as minScore
+              logDebug(
+                `[schema-normalizer] Skipped alias conversion for memory_search: ${alias}=${value} → ${original} (value <= 1, likely minScore)`,
+              );
+              continue;
+            }
+          }
+        }
+
         normalized[original] = normalized[alias];
         delete normalized[alias];
         changed = true;

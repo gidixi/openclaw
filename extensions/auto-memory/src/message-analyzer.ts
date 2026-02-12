@@ -121,6 +121,107 @@ function stripCodeFences(s: string): string {
 }
 
 /**
+ * Extracts JSON from text that may contain markdown, emojis, or other formatting.
+ * Tries multiple strategies to find valid JSON.
+ */
+function extractJSON(text: string): string | null {
+  // Strategy 0: Try the whole text after stripping code fences first
+  const stripped = stripCodeFences(text.trim());
+  if (stripped) {
+    try {
+      const parsed = JSON.parse(stripped);
+      if (parsed && typeof parsed === "object") {
+        return stripped;
+      }
+    } catch {
+      // Not valid JSON, continue
+    }
+  }
+
+  // Strategy 1: Find the first { and try to match balanced braces
+  const firstBrace = text.indexOf("{");
+  if (firstBrace >= 0) {
+    let braceCount = 0;
+    let inString = false;
+    let escapeNext = false;
+    let endPos = firstBrace;
+
+    for (let i = firstBrace; i < text.length; i++) {
+      const char = text[i];
+
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+
+      if (char === "\\") {
+        escapeNext = true;
+        continue;
+      }
+
+      if (char === '"' && !escapeNext) {
+        inString = !inString;
+        continue;
+      }
+
+      if (!inString) {
+        if (char === "{") {
+          braceCount++;
+        } else if (char === "}") {
+          braceCount--;
+          if (braceCount === 0) {
+            endPos = i + 1;
+            break;
+          }
+        }
+      }
+    }
+
+    if (braceCount === 0 && endPos > firstBrace) {
+      const candidate = text.substring(firstBrace, endPos);
+      try {
+        const parsed = JSON.parse(candidate);
+        if (parsed && typeof parsed === "object") {
+          return candidate;
+        }
+      } catch {
+        // Not valid JSON, continue
+      }
+    }
+  }
+
+  // Strategy 2: Try to find JSON after common prefixes
+  const afterPrefixMatch = text.match(
+    /(?:json|response|result|output|data|answer)[\s:]*([{\[][\s\S]*?[}\]])/is,
+  );
+  if (afterPrefixMatch && afterPrefixMatch[1]) {
+    try {
+      const parsed = JSON.parse(afterPrefixMatch[1]);
+      if (parsed && typeof parsed === "object") {
+        return afterPrefixMatch[1];
+      }
+    } catch {
+      // Not valid JSON
+    }
+  }
+
+  // Strategy 3: Try to find any JSON-like structure (non-greedy)
+  const jsonLikeMatch = text.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/);
+  if (jsonLikeMatch) {
+    try {
+      const parsed = JSON.parse(jsonLikeMatch[0]);
+      if (parsed && typeof parsed === "object") {
+        return jsonLikeMatch[0];
+      }
+    } catch {
+      // Not valid JSON
+    }
+  }
+
+  return null;
+}
+
+/**
  * Extracts only non-error text payloads.
  */
 function collectText(payloads: Array<{ text?: string; isError?: boolean }> | undefined): string {
@@ -198,45 +299,47 @@ export async function analyzeMessages(
 
   const summaryText = formatMemorySummary(memorySummary);
 
-  const prompt = `Information known so far:
+  const prompt = `You are a JSON API. Your ONLY job is to return valid JSON. Do NOT write any explanatory text.
+
+Analyze this conversation and extract important facts, decisions, or preferences.
+
+Information known so far:
 ${summaryText}
 
-Analyze this recent conversation and extract only the important facts, decisions, or preferences that should be remembered.
+Recent conversation:
+${conversationText}
 
-Respond in JSON format with an array of objects, each with:
-- fact: string describing the fact/decision/preference
-- category: one of the following: "decision", "preference", "fact", "personal_info"
-- importance: number between 0 and 1 indicating importance (only facts with importance >= ${minImportance} will be saved)
-
-Example response:
+TASK: Return ONLY a JSON object with this exact structure:
 {
   "facts": [
     {
-      "fact": "User prefers to receive notifications via email",
-      "category": "preference",
-      "importance": 0.8
-    },
-    {
-      "fact": "Decided to use PostgreSQL for the new project",
-      "category": "decision",
-      "importance": 0.9
+      "fact": "description of the fact",
+      "category": "decision|preference|fact|personal_info",
+      "importance": 0.0-1.0
     }
   ]
 }
 
-If there are no important facts, respond with: {"facts": []}
+RULES:
+- Return ONLY the JSON object, nothing else
+- If no important facts found, return: {"facts": []}
+- importance must be >= ${minImportance} for facts to be saved
+- Do NOT add any text, comments, or explanations
+- Do NOT use markdown code fences
+- Start with { and end with }
 
-Recent conversation:
-${conversationText}`;
+EXAMPLE (copy this format exactly):
+{"facts": [{"fact": "User prefers email notifications", "category": "preference", "importance": 0.8}]}`;
 
   const systemPrompt = [
-    "You are an assistant that analyzes conversations to extract important information to remember.",
-    "Return ONLY a valid JSON value.",
-    "Do not include extra commentary.",
-    "Do not wrap the response in code fences.",
+    "You are a JSON-only API. You MUST respond with ONLY valid JSON.",
+    "Your response must start with { and end with }.",
+    "Do NOT include any text, explanations, emojis, or markdown.",
+    "Do NOT wrap JSON in code fences or quotes.",
+    'If there are no facts, return: {"facts": []}',
   ].join(" ");
 
-  const fullPrompt = `${systemPrompt}\n\n${prompt}`;
+  const fullPrompt = `${systemPrompt}\n\n${prompt}\n\nRemember: Return ONLY JSON, starting with { and ending with }.`;
 
   let tmpDir: string | null = null;
   try {
@@ -270,16 +373,55 @@ ${conversationText}`;
 
     logger?.info(`auto-memory: got ${text.length} chars from LLM`);
 
-    // Parse JSON response
-    const raw = stripCodeFences(text);
+    // Parse JSON response - try multiple extraction strategies
     let parsed: { facts?: ExtractedFact[] };
+    const extractedJSON = extractJSON(text);
+
+    if (!extractedJSON) {
+      // If no JSON found, the LLM didn't follow instructions
+      // Log the response for debugging and return empty facts
+      logger?.warn("auto-memory: LLM did not return JSON format");
+      logger?.warn(`auto-memory: raw LLM response (first 500 chars): ${text.substring(0, 500)}`);
+
+      // Try one more time: check if the response is very short and might be a simple "no facts" response
+      const lowerText = text.toLowerCase().trim();
+      if (
+        lowerText.length < 200 &&
+        (lowerText.includes("no facts") ||
+          lowerText.includes("nessun fatto") ||
+          lowerText.includes("nessuna informazione") ||
+          lowerText.includes("non ci sono") ||
+          lowerText === '{"facts": []}' ||
+          lowerText === '{"facts": []}')
+      ) {
+        logger?.info("auto-memory: detected 'no facts' response, returning empty array");
+        return { facts: [] };
+      }
+
+      // If response seems to contain actual information but not in JSON format,
+      // we could try to extract it, but for now we'll just return empty
+      // This prevents storing incorrectly formatted data
+      logger?.warn("auto-memory: LLM response contains text but no valid JSON - ignoring");
+      return { facts: [] };
+    }
+
+    // Log extracted JSON for debugging (using info since debug might not be available)
+    if (logger && typeof logger.debug === "function") {
+      logger.debug(
+        `auto-memory: extracted JSON (first 500 chars): ${extractedJSON.substring(0, 500)}`,
+      );
+    }
+
     try {
-      parsed = JSON.parse(raw);
+      parsed = JSON.parse(extractedJSON);
     } catch (err) {
       logger?.error(
         `auto-memory: failed to parse JSON: ${err instanceof Error ? err.message : String(err)}`,
       );
-      logger?.warn(`auto-memory: raw LLM response: ${raw.substring(0, 500)}`);
+      logger?.warn(
+        `auto-memory: extracted JSON (first 500 chars): ${extractedJSON.substring(0, 500)}`,
+      );
+      logger?.warn(`auto-memory: raw LLM response (first 500 chars): ${text.substring(0, 500)}`);
       return { facts: [] };
     }
 
