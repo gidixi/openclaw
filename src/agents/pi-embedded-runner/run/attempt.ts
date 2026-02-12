@@ -847,6 +847,9 @@ export async function runEmbeddedAttempt(
           // Preventive compaction: check if we should compact before sending the prompt
           // This avoids context overflow errors by compacting proactively when reaching 95% of context window
           const compactionSettings = settingsManager.getCompactionSettings();
+          log.debug(
+            `[preventive-compaction-check] enabled=${compactionSettings.enabled} contextWindow=${params.model.contextWindow} provider=${params.provider} model=${params.modelId}`,
+          );
           if (compactionSettings.enabled && params.model.contextWindow) {
             // Estimate context tokens: use last assistant usage if available, otherwise estimate all messages
             const entries = sessionManager.getEntries();
@@ -880,8 +883,13 @@ export async function runEmbeddedAttempt(
             // Compact when reaching 95% of context window
             const threshold95Percent = Math.floor(params.model.contextWindow * 0.95);
             const shouldCompactPreventively = contextTokens >= threshold95Percent;
+            const usagePercent = ((contextTokens / params.model.contextWindow) * 100).toFixed(1);
+            if (!shouldCompactPreventively) {
+              log.debug(
+                `[preventive-compaction-check] NOT triggered: contextTokens=${contextTokens} threshold=${threshold95Percent} percent=${usagePercent}% provider=${params.provider} model=${params.modelId}`,
+              );
+            }
             if (shouldCompactPreventively) {
-              const usagePercent = ((contextTokens / params.model.contextWindow) * 100).toFixed(1);
               log.info(
                 `preventive compaction triggered: contextTokens=${contextTokens} (${usagePercent}%) contextWindow=${params.model.contextWindow} threshold=95% for ${params.provider}/${params.modelId}`,
               );
