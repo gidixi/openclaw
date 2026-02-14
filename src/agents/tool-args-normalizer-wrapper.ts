@@ -22,6 +22,77 @@ import { logDebug, logWarn } from "../logger.js";
 import { normalizeToolParams, normalizeToolParamsFromSchema } from "./pi-tools.read.js";
 
 // ---------------------------------------------------------------------------
+// Control token stripping
+// ---------------------------------------------------------------------------
+
+/**
+ * Strip leaked control tokens that gpt-oss sometimes emits (e.g. <|end|>,
+ * <|start|>, <|channel|>, <|constrain|>, <|message|>).  These are internal
+ * model delimiters that should never appear in the output.
+ */
+function stripControlTokens(text: string): string {
+  // Strip all Harmony control tokens: <|start|>, <|end|>, <|message|>, <|channel|>, etc.
+  return text.replace(/<\|[^|]+\|>/g, "");
+}
+
+/**
+ * Clean tool name by removing control tokens and extracting the actual tool name.
+ * Handles cases like "exec<|channel|>analysis" → "exec" (extracts name before first control token).
+ * If no control tokens are found, returns the cleaned string.
+ */
+function cleanToolName(name: string, availableTools?: Array<{ name: string }>): string {
+  // First, try to extract tool name before first control token
+  // Pattern: "exec<|channel|>analysis" → "exec"
+  const controlTokenMatch = name.match(/^([^<]+)(<\|[^|]+\|>)/);
+  if (controlTokenMatch) {
+    const candidateName = controlTokenMatch[1].trim();
+    // If we have available tools, check if the candidate is a valid tool name
+    if (availableTools) {
+      const found = availableTools.find((t) => t.name === candidateName);
+      if (found) {
+        logDebug(
+          `[tool-normalizer] Extracted tool name from control token leak: "${name}" → "${candidateName}"`,
+        );
+        return candidateName;
+      }
+    }
+    // If no match found, still use the part before control token as it's likely the tool name
+    logDebug(
+      `[tool-normalizer] Extracted tool name prefix from control token leak: "${name}" → "${candidateName}"`,
+    );
+    return candidateName;
+  }
+
+  // If no control token pattern found, just strip any control tokens and return
+  const cleaned = stripControlTokens(name);
+  if (cleaned !== name) {
+    logDebug(`[tool-normalizer] Stripped control tokens from tool name: "${name}" → "${cleaned}"`);
+  }
+  return cleaned;
+}
+
+/**
+ * Recursively strip control tokens from all string values in an object.
+ * This ensures that control tokens leaked into tool arguments are removed.
+ */
+function stripControlTokensFromArgs(args: unknown): unknown {
+  if (typeof args === "string") {
+    return stripControlTokens(args);
+  }
+  if (Array.isArray(args)) {
+    return args.map(stripControlTokensFromArgs);
+  }
+  if (args && typeof args === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(args)) {
+      result[key] = stripControlTokensFromArgs(value);
+    }
+    return result;
+  }
+  return args;
+}
+
+// ---------------------------------------------------------------------------
 // Argument normalizer for a single toolCall content block
 // ---------------------------------------------------------------------------
 
@@ -33,7 +104,9 @@ function normalizeToolCallArgs(
   if (!args || typeof args !== "object") {
     return undefined;
   }
-  const record = args as Record<string, unknown>;
+  // First, strip control tokens from all string values in arguments
+  const cleanedArgs = stripControlTokensFromArgs(args) as Record<string, unknown>;
+  const record = cleanedArgs;
 
   // 1. Unwrap double-wrapped arguments:
   //    { name: "exec", arguments: { command: "..." } } → { command: "..." }
@@ -1139,6 +1212,14 @@ function normalizeMessageToolCalls(
 
     const toolCall = block as { type: "toolCall"; id: string; name: string; arguments: unknown };
 
+    // --- Clean up tool name: strip leaked control tokens and extract actual tool name ---
+    // Handles cases like "exec<|channel|>analysis" → "exec"
+    const originalToolName = toolCall.name;
+    const cleanedToolName = cleanToolName(originalToolName, tools);
+    if (cleanedToolName !== originalToolName) {
+      logWarn(`[tool-normalizer] ⚠ Fixed tool name: "${originalToolName}" → "${cleanedToolName}"`);
+    }
+
     // --- Diagnostic logging: log EVERY tool call as received ---
     const argsJson = JSON.stringify(toolCall.arguments);
     const argsKeys =
@@ -1148,33 +1229,43 @@ function normalizeMessageToolCalls(
 
     if (argsKeys.length === 0) {
       logWarn(
-        `[tool-normalizer] ⚠ Tool "${toolCall.name}" called with EMPTY arguments: ${argsJson}`,
+        `[tool-normalizer] ⚠ Tool "${cleanedToolName}" called with EMPTY arguments: ${argsJson}`,
       );
     } else {
       logDebug(
-        `[tool-normalizer] Tool "${toolCall.name}" raw args (keys: ${argsKeys.join(", ")}): ${argsJson.slice(0, 300)}`,
+        `[tool-normalizer] Tool "${cleanedToolName}" raw args (keys: ${argsKeys.join(", ")}): ${argsJson.slice(0, 300)}`,
       );
     }
 
-    const normalized = normalizeToolCallArgs(toolCall.arguments, toolCall.name, tools);
-    if (!normalized) {
+    const normalized = normalizeToolCallArgs(toolCall.arguments, cleanedToolName, tools);
+    const nameChanged = cleanedToolName !== originalToolName;
+    const argsChanged =
+      normalized && JSON.stringify(normalized) !== JSON.stringify(toolCall.arguments);
+
+    if (!normalized && !nameChanged) {
       return block;
     }
 
     // Check if normalization actually changed anything
     const originalJson = JSON.stringify(toolCall.arguments);
-    const normalizedJson = JSON.stringify(normalized);
-    if (originalJson === normalizedJson) {
+    const normalizedJson = normalized ? JSON.stringify(normalized) : originalJson;
+    if (!nameChanged && originalJson === normalizedJson) {
       return block;
     }
 
     modified = true;
-    logWarn(
-      `[tool-normalizer] Normalized args for "${toolCall.name}": ${originalJson.slice(0, 300)} → ${normalizedJson.slice(0, 300)}`,
-    );
+    if (nameChanged) {
+      logWarn(`[tool-normalizer] Fixed tool name: "${originalToolName}" → "${cleanedToolName}"`);
+    }
+    if (argsChanged) {
+      logWarn(
+        `[tool-normalizer] Normalized args for "${cleanedToolName}": ${originalJson.slice(0, 300)} → ${normalizedJson.slice(0, 300)}`,
+      );
+    }
     return {
       ...toolCall,
-      arguments: normalized,
+      name: cleanedToolName,
+      arguments: normalized ?? toolCall.arguments,
     };
   });
 
@@ -1255,9 +1346,19 @@ async function pipeAndNormalize(
                 name: string;
                 arguments: unknown;
               };
-              const normalized = normalizeToolCallArgs(tc.arguments, tc.name, tools);
-              if (normalized && JSON.stringify(normalized) !== JSON.stringify(tc.arguments)) {
-                return { ...tc, arguments: normalized };
+              // Clean up tool name: strip leaked control tokens and extract actual tool name
+              const cleanedName = cleanToolName(tc.name, tools);
+              const nameChanged = cleanedName !== tc.name;
+              if (nameChanged) {
+                logWarn(
+                  `[tool-normalizer] ⚠ Fixed tool name in toolcall_end: "${tc.name}" → "${cleanedName}"`,
+                );
+              }
+              const normalized = normalizeToolCallArgs(tc.arguments, cleanedName, tools);
+              const argsChanged =
+                normalized && JSON.stringify(normalized) !== JSON.stringify(tc.arguments);
+              if (nameChanged || argsChanged) {
+                return { ...tc, name: cleanedName, arguments: normalized ?? tc.arguments };
               }
               return event.toolCall;
             })()
